@@ -1,0 +1,881 @@
+Script adapted from the DADA2 pipeline from @benjjneb
+https://benjjneb.github.io/dada2/tutorial_1_8.html
+
+Library
+```{r}
+library(dada2)
+```
+Working directory and path
+```{r}
+# Set working directory
+setwd("/Users/admin/Documents/R/JOHI")
+# Save paths to folder
+path <- "/Users/admin/Documents/R/JOHI"
+``` 
+Function
+```{r}
+getN <- function(x) sum(getUniques(x))
+```
+#Primer set 1
+##Adadle - JOHI
+```{r}
+path_johi_ps1 <- "/Users/admin/Documents/R/JOHI/fastq/fastq_JOHI_ps1"
+# Adding files
+fnFs_johi_ps1 <- sort(list.files(path_johi_ps1, pattern="_R1_001.fastq", full.names = TRUE))
+fnRs_johi_ps1 <- sort(list.files(path_johi_ps1, pattern="_R2_001.fastq", full.names = TRUE))
+sample.namesF_johi_ps1 <- sapply(strsplit(basename(fnFs_johi_ps1), "_L001"), `[`, 1)
+sample.namesR_johi_ps1 <- sapply(strsplit(basename(fnRs_johi_ps1), "_L001"), `[`, 1)
+# Filter and trim
+filtFs_johi_ps1 <- file.path(path_johi_ps1, "dada2_filtered",
+                             paste0(sample.namesF_johi_ps1, "_F_filt.fastq.gz"))
+filtRs_johi_ps1 <- file.path(path_johi_ps1, "dada2_filtered",
+                             paste0(sample.namesR_johi_ps1, "_R_filt.fastq.gz"))
+names(filtFs_johi_ps1) <- sample.namesF_johi_ps1
+names(filtRs_johi_ps1) <- sample.namesR_johi_ps1
+# Check parameters
+out_johi_ps1 <- filterAndTrim(fnFs_johi_ps1, filtFs_johi_ps1, fnRs_johi_ps1, filtRs_johi_ps1,
+                              truncLen=c(240,220), maxN=0, maxEE=c(6,8), truncQ=c(2,2),
+                     rm.phix=TRUE, verbose=TRUE, matchIDs=TRUE,
+                     compress=TRUE, multithread=TRUE)
+# Check retained reads
+retained_johi_ps1 <- as.data.frame(out_johi_ps1)
+retained_johi_ps1$percentage_retained <- retained_johi_ps1$reads.out/retained_johi_ps1$reads.in*100
+rownames(retained_johi_ps1) <-  sample.namesF_johi_ps1
+retained_johi_ps1 <- retained_johi_ps1 %>%
+  mutate(Country = "Ethiopia")
+retained_johi_ps1 <- retained_johi_ps1[,c(4,1,2,3)]
+#Learn error rate
+errF_johi_ps1 <- learnErrors(filtFs_johi_ps1, multithread=TRUE)
+errR_johi_ps1 <- learnErrors(filtRs_johi_ps1, multithread=TRUE)
+# Dereplication
+derepFs_johi_ps1 <- derepFastq(filtFs_johi_ps1, verbose=TRUE)
+derepRs_johi_ps1 <- derepFastq(filtRs_johi_ps1, verbose=TRUE)
+# Name the derep-class objects by the sample names
+names(derepFs_johi_ps1) <- sample.namesF_johi_ps1
+names(derepRs_johi_ps1) <- sample.namesR_johi_ps1
+#Sample inference
+dadaFs_johi_ps1 <- dada(derepFs_johi_ps1, err=errF_johi_ps1, multithread=TRUE)
+dadaRs_johi_ps1 <- dada(derepRs_johi_ps1, err=errR_johi_ps1, multithread=TRUE)
+#Track reads
+track_johi_ps1_all <- cbind(sapply(derepFs_johi_ps1, getN),
+                        sapply(derepRs_johi_ps1, getN),
+                        sapply(dadaFs_johi_ps1, getN),
+                        sapply(dadaRs_johi_ps1, getN))
+samples_to_keep_johi_ps1 <- track_johi_ps1_all[,4] > 100 
+# Merge
+mergers_johi_ps1 <- mergePairs(dadaFs_johi_ps1[samples_to_keep_johi_ps1],
+                      derepFs_johi_ps1[samples_to_keep_johi_ps1],
+                      dadaRs_johi_ps1[samples_to_keep_johi_ps1],
+                      derepRs_johi_ps1[samples_to_keep_johi_ps1],
+                      verbose=TRUE)
+#Track reads
+track_johi_ps1 <- cbind(sapply(derepFs_johi[samples_to_keep_johi_ps1], getN),
+                   sapply(derepRs_johi[samples_to_keep_johi_ps1], getN),
+                  sapply(dadaFs_johi[samples_to_keep_johi_ps1], getN), 
+                  sapply(dadaRs_johi[samples_to_keep_johi_ps1], getN),
+                  sapply(mergers_johi_ps1, getN))
+track_johi_ps1 <- cbind(track_johi_ps1, 100*track_johi_ps1[,5]/track_johi_ps1[,4])
+#Sequence table
+seqtab_johi_ps1 <- makeSequenceTable(mergers_johi_ps1)
+write.csv(seqtab_johi_ps1, "seqtab_johi_ps1")
+```
+## Central African Republic
+```{r}
+path_car <- "/Users/admin/Documents/R/JOHI/fastq/fastq_car"
+# Adding files
+fnFs_car <- sort(list.files(path_car, pattern="_R1_001.fastq.gz", full.names = TRUE))
+fnRs_car <- sort(list.files(path_car, pattern="_R2_001.fastq.gz", full.names = TRUE))
+sample.namesF_car <- sapply(strsplit(basename(fnFs_car), "_L001"), `[`, 1)
+sample.namesR_car <- sapply(strsplit(basename(fnRs_car), "_L001"), `[`, 1)
+# Filter and trim
+filtFs_car <- file.path(path_car, "dada2_filtered",
+                             paste0(sample.namesF_car, "_F_filt.fastq.gz"))
+filtRs_car <- file.path(path_car, "dada2_filtered",
+                             paste0(sample.namesR_car, "_R_filt.fastq.gz"))
+names(filtFs_car) <- sample.namesF_car
+names(filtRs_car) <- sample.namesR_car
+# Check parameters
+out_car <- filterAndTrim(fnFs_car, filtFs_car, fnRs_car, filtRs_car,
+                              truncLen=c(230,200),trimLeft = 20, maxN=0, maxEE=c(6,8), truncQ=c(2,2),
+                     rm.phix=TRUE, verbose=TRUE, matchIDs=TRUE,
+                     compress=TRUE, multithread=TRUE)
+# Check retained reads
+retained_car <- as.data.frame(out_car)
+retained_car$percentage_retained <- retained_car$reads.out/retained_car$reads.in*100
+rownames(retained_car) <-  sample.namesF_car
+retained_car <- retained_car %>%
+  mutate(Country = "CAR")
+retained_car <- retained_car[,c(4,1,2,3)]
+#Learn error rate
+errF_car <- learnErrors(filtFs_car, multithread=TRUE)
+errR_car <- learnErrors(filtRs_car, multithread=TRUE)
+# Dereplication
+derepFs_car <- derepFastq(filtFs_car, verbose=TRUE)
+derepRs_car <- derepFastq(filtRs_car, verbose=TRUE)
+# Name the derep-class objects by the sample names
+names(derepFs_car) <- sample.namesF_car
+names(derepRs_car) <- sample.namesR_car
+#Sample inference
+dadaFs_car <- dada(derepFs_car, err=errF_car, multithread=TRUE)
+dadaRs_car <- dada(derepRs_car, err=errR_car, multithread=TRUE)
+#Track reads
+track_car_all <- cbind(sapply(derepFs_car, getN),
+                        sapply(derepRs_car, getN),
+                        sapply(dadaFs_car, getN),
+                        sapply(dadaRs_car, getN))
+samples_to_keep_car <- track_car_all[,4] > 100 
+#Merge
+mergers_car <- mergePairs(dadaFs_car[samples_to_keep_car],
+                      derepFs_car[samples_to_keep_car],
+                      dadaRs_car[samples_to_keep_car],
+                      derepRs_car[samples_to_keep_car],
+                      verbose=TRUE)
+#Track reads
+track_car <- cbind(sapply(derepFs_car[samples_to_keep_car], getN),
+                   sapply(derepRs_car[samples_to_keep_car], getN),
+                  sapply(dadaFs_car[samples_to_keep_car], getN), 
+                  sapply(dadaRs_car[samples_to_keep_car], getN),
+                  sapply(mergers_car, getN))
+track_car <- cbind(track_car, 100*track_car[,5]/track_car[,4])
+# Sequence table
+seqtab_car <- makeSequenceTable(mergers_car)
+write.csv(seqtab_car, "seqtab_car.csv")
+```
+##Madagascar
+```{r}
+path_mad <- "/Users/admin/Documents/R/JOHI/fastq/fastq_madagascar"
+# Adding files
+fnFs_mad <- sort(list.files(path_mad, pattern="_R1_001.fastq.gz", full.names = TRUE))
+fnRs_mad <- sort(list.files(path_mad, pattern="_R2_001.fastq.gz", full.names = TRUE))
+sample.namesF_mad <- sapply(strsplit(basename(fnFs_mad), "_L001"), `[`, 1)
+sample.namesR_mad <- sapply(strsplit(basename(fnRs_mad), "_L001"), `[`, 1)
+# Filter and trim
+filtFs_mad <- file.path(path_mad, "dada2_filtered",
+                             paste0(sample.namesF_mad, "_F_filt.fastq.gz"))
+filtRs_mad <- file.path(path_mad, "dada2_filtered",
+                             paste0(sample.namesR_mad, "_R_filt.fastq.gz"))
+names(filtFs_mad) <- sample.namesF_mad
+names(filtRs_mad) <- sample.namesR_mad
+# Check parameters
+out_mad <- filterAndTrim(fnFs_mad, filtFs_mad, fnRs_mad, filtRs_mad,
+                              truncLen=c(230,200), trimLeft = 20, maxN=0, maxEE=c(6,8), truncQ=c(2,2),
+                     rm.phix=TRUE, verbose=TRUE, matchIDs=TRUE,
+                     compress=TRUE, multithread=TRUE)
+# Check retained reads
+retained_mad <- as.data.frame(out_mad)
+retained_mad$percentage_retained <- retained_mad$reads.out/retained_mad$reads.in*100
+rownames(retained_mad) <-  sample.namesF_mad
+retained_mad <- retained_mad %>%
+  mutate(Country = "Madagascar")
+retained_mad <- retained_mad[,c(4,1,2,3)]
+#Learn error rate
+errF_mad <- learnErrors(filtFs_mad, multithread=TRUE)
+errR_mad <- learnErrors(filtRs_mad, multithread=TRUE)
+# Dereplication
+derepFs_mad <- derepFastq(filtFs_mad, verbose=TRUE)
+derepRs_mad <- derepFastq(filtRs_mad, verbose=TRUE)
+# Name the derep-class objects by the sample names
+names(derepFs_mad) <- sample.namesF_mad
+names(derepRs_mad) <- sample.namesR_mad
+#Sample inference
+dadaFs_mad <- dada(derepFs_mad, err=errF_mad, multithread=TRUE)
+dadaRs_mad <- dada(derepRs_mad, err=errR_mad, multithread=TRUE)
+#Track reads
+track_mad_all <- cbind(sapply(derepFs_mad, getN),
+                        sapply(derepRs_mad, getN),
+                        sapply(dadaFs_mad, getN),
+                        sapply(dadaRs_mad, getN))
+samples_to_keep_mad <- track_mad_all[,4] > 100 
+#Merge
+mergers_mad <- mergePairs(dadaFs_mad[samples_to_keep_mad],
+                      derepFs_mad[samples_to_keep_mad],
+                      dadaRs_mad[samples_to_keep_mad],
+                      derepRs_mad[samples_to_keep_mad],
+                      verbose=TRUE)
+#Track reads
+track_mad <- cbind(sapply(derepFs_mad[samples_to_keep_mad], getN),
+                   sapply(derepRs_mad[samples_to_keep_mad], getN),
+                  sapply(dadaFs_mad[samples_to_keep_mad], getN), 
+                  sapply(dadaRs_mad[samples_to_keep_mad], getN),
+                  sapply(mergers_mad, getN))
+track_mad <- cbind(track_mad, 100*track_mad[,5]/track_mad[,4])
+#Sequence table
+seqtab_mad <- makeSequenceTable(mergers_mad)
+write.csv(seqtab_rca, "seqtab_rca.csv")
+```
+Merge sequence table and remove chimeras
+```{r}
+seqtab_ps1 <- mergeSequenceTables(seqtab_johi_ps1, seqtab_rca, seqtab_mad)
+# Remove chimeras
+seqtab.nochim_ps1 <- removeBimeraDenovo(seqtab_ps1, method = "pooled", multithread = TRUE,verbose = TRUE)
+```
+Track reads
+```{r}
+retained_ps1 <- rbind(retained_johi_ps1[samples_to_keep_johi_ps1,], retained_rca[samples_to_keep_rca,],
+                  retained_mad[samples_to_keep_mad,])
+track_ps1 <- rbind(track_johi_ps1, track_rca, track_mad)
+track_reads_ps1 <- cbind(retained_ps1, track_ps1, rowSums(seqtab.nochim_ps1))
+track_reads_ps1 <- cbind(track_reads_ps1, 100-track_reads_ps1[,11]/track_reads_ps1[,9]*100)
+colnames(track_reads_ps1) <- c("Country", "input", "filtered","retained",
+                           "derepF", "derepR", "denoisedF", "denoisedR", "merged", 
+                           "percent_merged", "nochimeras", "percent_chimeras")
+write.csv(track_reads_ps1, "read_retention_table_primer_set1.csv")
+```
+Assign taxonomy
+```{r}
+taxa_ps1 <- assignTaxonomy(seqtab.nochim_ps1,"/Users/admin/Documents/R/JOHI/silva_nr99_v138.1_wSpecies_train_set.fa.gz",multithread = TRUE)
+NAs_ps1 <- is.na(taxa_ps1[,1])
+NAs_ps1 <- which(NAs_ps1 == TRUE)
+taxa_ps1[NAs_ps1,1:7] <- "Unassigned"
+write.table(seqtab.nochim_ps1, "sequence_table_primer_set1.txt",quote = F, row.names = T, col.names = T, sep = "\t")
+write.table(taxa_ps1, "taxonomy_table_primer_set1.txt", quote = F, row.names = T, col.names = T, sep = "\t")
+```
+#Primer set 2
+##Adadle - JOHI
+```{r}
+path_johi_ps2 <- "/Users/admin/Documents/R/JOHI/fastq/fastq_johi_ps2"
+# Adding johi files
+fnFs_johi_ps2 <- sort(list.files(path_johi_ps2, pattern="_R1_001.fastq", full.names = TRUE))
+fnRs_johi_ps2 <- sort(list.files(path_johi_ps2, pattern="_R2_001.fastq", full.names = TRUE))
+sample.namesF_johi_ps2 <- sapply(strsplit(basename(fnFs_johi_ps2), "_L001"), `[`, 1)
+sample.namesR_johi_ps2 <- sapply(strsplit(basename(fnRs_johi_ps2), "_L001"), `[`, 1)
+# Filter and trim
+filtFs_johi_ps2 <- file.path(path_johi_ps2, "dada2_filtered",
+                             paste0(sample.namesF_johi_ps2, "_F_filt.fastq.gz"))
+filtRs_johi_ps2 <- file.path(path_johi_ps2, "dada2_filtered",
+                             paste0(sample.namesR_johi_ps2, "_R_filt.fastq.gz"))
+names(filtFs_johi_ps2) <- sample.namesF_johi_ps2
+names(filtRs_johi_ps2) <- sample.namesR_johi_ps2
+out_johi_ps2 <- filterAndTrim(fnFs_johi_ps2, filtFs_johi_ps2, fnRs_johi_ps2, filtRs_johi_ps2,
+                              truncLen=c(240,220), maxN=0, maxEE=c(6,8), truncQ=c(2,2),
+                     rm.phix=TRUE, verbose=TRUE, matchIDs=TRUE,
+                     compress=TRUE, multithread=TRUE)
+
+# Check retained reads
+retained_johi_ps2 <- as.data.frame(out_johi_ps2)
+retained_johi_ps2$percentage_retained <- retained_johi_ps2$reads.out/retained_johi_ps2$reads.in*100
+rownames(retained_johi_ps2) <-  sample.namesF_johi_ps2
+retained_johi_ps2 <- retained_johi_ps2 %>%
+  mutate(Country = "Ethiopia")
+retained_johi_ps2 <- retained_johi_ps2[,c(4,1,2,3)]
+#Learn error rate
+errF_johi_ps2 <- learnErrors(filtFs_johi_ps2, multithread=TRUE)
+errR_johi_ps2 <- learnErrors(filtRs_johi_ps2, multithread = TRUE)
+#Dereplication
+derepFs_johi_ps2 <- derepFastq(filtFs_johi_ps2, verbose=TRUE)
+derepRs_johi_ps2 <- derepFastq(filtRs_johi_ps2, verbose=TRUE)
+# Name the derep-class objects by the sample names
+names(derepFs_johi_ps2) <- sample.namesF_johi_ps2
+names(derepRs_johi_ps2) <- sample.namesR_johi_ps2
+#Sample inference
+dadaFs_johi_ps2 <- dada(derepFs_johi_ps2, err=errF_johi_ps2, multithread=TRUE)
+dadaRs_johi_ps2 <- dada(derepRs_johi_ps2, err=errR_johi_ps2, multithread=TRUE)
+#Track reads
+track_all_johi_ps2 <- cbind(sapply(derepFs_johi_ps2, getN),
+                        sapply(derepRs_johi_ps2, getN),
+                        sapply(dadaFs_johi_ps2, getN),
+                        sapply(dadaRs_johi_ps2, getN))
+samples_to_keep_johi_ps2 <- track_all_johi_ps2[,4] > 1000
+#Merge
+mergers_johi_ps2 <- mergePairs(dadaFs_johi_ps2[samples_to_keep_johi_ps2],
+                      derepFs_johi_ps2[samples_to_keep_johi_ps2],
+                      dadaRs_johi_ps2[samples_to_keep_johi_ps2],
+                      derepRs_johi_ps2[samples_to_keep_johi_ps2],
+                      verbose=TRUE)
+#Track reads
+track_johi_ps2 <- cbind(sapply(derepFs_johi_ps2[samples_to_keep_johi_ps2], getN),
+                   sapply(derepRs_johi_ps2[samples_to_keep_johi_ps2], getN),
+                  sapply(dadaFs_johi_ps2[samples_to_keep_johi_ps2], getN), 
+                  sapply(dadaRs_johi_ps2[samples_to_keep_johi_ps2], getN),
+                  sapply(mergers_johi_ps2, getN))
+track_johi_ps2 <- cbind(track_johi_ps2, 100*track_johi_ps2[,5]/track_johi_ps2[,4])
+#Sequence table
+seqtab_johi_ps2 <- makeSequenceTable(mergers_johi_ps2)
+write.csv(seqtab_johi_ps2, "seqtab_johi_ps2.csv")
+```
+## Cameroon
+```{r}
+path_cameroon <- "/Users/admin/Documents/R/JOHI/fastq/fastq_Cameroon"
+# Adding Cameroon files
+fnFs_cameroon <- sort(list.files(path_cameroon, pattern="_1.fastq", full.names = TRUE))
+fnRs_cameroon <- sort(list.files(path_cameroon, pattern="_2.fastq", full.names = TRUE))
+sample.namesF_cameroon <- sapply(strsplit(basename(fnFs_cameroon), "_1"), `[`, 1)
+sample.namesR_cameroon <- sapply(strsplit(basename(fnRs_cameroon), "_2"), `[`, 1)
+# Filter and trim
+filtFs_cameroon <- file.path(path_cameroon, "dada2_filtered",
+                             paste0(sample.namesF_cameroon, "_F_filt.fastq.gz"))
+filtRs_cameroon <- file.path(path_cameroon, "dada2_filtered",
+                             paste0(sample.namesR_cameroon, "_R_filt.fastq.gz"))
+names(filtFs_cameroon) <- sample.namesF_cameroon
+names(filtRs_cameroon) <- sample.namesR_cameroon
+# Parameters
+out_cameroon <- filterAndTrim(fnFs_cameroon, filtFs_cameroon, fnRs_cameroon, filtRs_cameroon,
+                              truncLen=c(240,230), maxN=0, maxEE=c(6,8),
+                              truncQ=c(2,2), rm.phix=TRUE, verbose=TRUE,
+                              matchIDs = FALSE,
+                              compress=TRUE, multithread=TRUE) 
+# Check retained reads
+retained_cameroon <- as.data.frame(out_cameroon)
+retained_cameroon$percentage_retained <- retained_cameroon$reads.out/retained_cameroon$reads.in*100
+rownames(retained_cameroon) <-  sample.namesF_cameroon
+retained_cameroon <- retained_cameroon %>%
+  mutate(Country = "Cameroon")
+retained_cameroon <- retained_cameroon[,c(4,1,2,3)]
+#Learn error rate
+errF_cameroon <- learnErrors(filtFs_cameroon, multithread=TRUE)
+errR_cameroon <- learnErrors(filtRs_cameroon, multithread=TRUE)
+#Dereplication
+derepFs_cameroon <- derepFastq(filtFs_cameroon, verbose=TRUE)
+derepRs_cameroon <- derepFastq(filtRs_cameroon, verbose=TRUE)
+#Name the derep-class objects by the sample names
+names(derepFs_cameroon) <- sample.namesF_cameroon
+names(derepRs_cameroon) <- sample.namesR_cameroon
+#Sample inference
+dadaFs_cameroon <- dada(derepFs_cameroon, err=errF_cameroon, multithread=TRUE)
+dadaRs_cameroon <- dada(derepRs_cameroon, err=errR_cameroon, multithread=TRUE)
+#Track reads
+track_all_cameroon <- cbind(sapply(derepFs_cameroon, getN),
+                        sapply(derepRs_cameroon, getN),
+                        sapply(dadaFs_cameroon, getN),
+                        sapply(dadaRs_cameroon, getN))
+samples_to_keep_cameroon <- track_all_cameroon[,4] > 1000 
+
+#Merge
+mergers_cameroon <- mergePairs(dadaFs_cameroon[samples_to_keep_cameroon],
+                      derepFs_cameroon[samples_to_keep_cameroon],
+                      dadaRs_cameroon[samples_to_keep_cameroon],
+                      derepRs_cameroon[samples_to_keep_cameroon],
+                      verbose=TRUE)
+#Track reads
+track_cameroon <- cbind(sapply(derepFs_cameroon[samples_to_keep_cameroon], getN),
+                   sapply(derepRs_cameroon[samples_to_keep_cameroon], getN),
+                  sapply(dadaFs_cameroon[samples_to_keep_cameroon], getN), 
+                  sapply(dadaRs_cameroon[samples_to_keep_cameroon], getN),
+                  sapply(mergers_cameroon, getN))
+track_cameroon <- cbind(track_cameroon, 100*track_cameroon[,5]/track_cameroon[,4])
+#Sequence table
+seqtab_cameroon <- makeSequenceTable(mergers_cameroon)
+write.csv(seqtab_cameroon, "seqtab_cameroon.csv")
+```
+## Tanzania
+```{r}
+path_hadza<- "/Users/admin/Documents/R/JOHI/fastq/fastq_tanzania"
+# Adding Hadza files
+fnFs_hadza <- sort(list.files(path_hadza, pattern="_1.fastq", full.names = TRUE))
+fnRs_hadza <- sort(list.files(path_hadza, pattern="_2.fastq", full.names = TRUE))
+sample.namesF_hadza <- sapply(strsplit(basename(fnFs_hadza), "_1"), `[`, 1)
+sample.namesR_hadza <- sapply(strsplit(basename(fnRs_hadza), "_2"), `[`, 1)
+# Filter and trim
+filtFs_hadza <- file.path(path_hadza, "dada2_filtered",
+                             paste0(sample.namesF_hadza, "_F_filt.fastq.gz"))
+filtRs_hadza <- file.path(path_hadza, "dada2_filtered",
+                             paste0(sample.namesR_hadza, "_R_filt.fastq.gz"))
+names(filtFs_hadza) <- sample.namesF_hadza
+names(filtRs_hadza) <- sample.namesR_hadza
+# Parameters
+out_hadza <- filterAndTrim(fnFs_hadza, filtFs_hadza, fnRs_hadza, filtRs_hadza,
+                              truncLen=c(230,200), maxN=0, maxEE=c(6,8), truncQ=c(2,2),
+                     rm.phix=TRUE, verbose=TRUE, matchIDs=FALSE,
+                     compress=TRUE, multithread=TRUE)
+# Check retained reads
+retained_hadza <- as.data.frame(out_hadza)
+retained_hadza$percentage_retained <- retained_hadza$reads.out/retained_hadza$reads.in*100
+rownames(retained_hadza) <-  sample.namesF_hadza
+retained_hadza <- retained_hadza %>%
+  mutate(Country = "Tanzania")
+retained_hadza <- retained_hadza[,c(4,1,2,3)]
+#Learn error rate
+errF_hadza <- learnErrors(filtFs_hadza, multithread=TRUE)
+errR_hadza <- learnErrors(filtRs_hadza, multithread=TRUE)
+#Dereplication
+derepFs_hadza <- derepFastq(filtFs_hadza, verbose=TRUE)
+derepRs_hadza <- derepFastq(filtRs_hadza, verbose=TRUE)
+# Name the derep-class objects by the sample names
+names(derepFs_hadza) <- sample.namesF_hadza
+names(derepRs_hadza) <- sample.namesR_hadza
+#Sample inference
+dadaFs_hadza <- dada(derepFs_hadza, err=errF_hadza, multithread=TRUE)
+dadaRs_hadza <- dada(derepRs_hadza, err=errR_hadza, multithread=TRUE)
+#Track reads
+track_all_hadza <- cbind(sapply(derepFs_hadza, getN),
+                        sapply(derepRs_hadza, getN),
+                        sapply(dadaFs_hadza, getN),
+                        sapply(dadaRs_hadza, getN))
+samples_to_keep_hadza <- track_all_hadza[,4] > 1000 
+# Merge
+mergers_hadza <- mergePairs(dadaFs_hadza[samples_to_keep_hadza],
+                      derepFs_hadza[samples_to_keep_hadza],
+                      dadaRs_hadza[samples_to_keep_hadza],
+                      derepRs_hadza[samples_to_keep_hadza],
+                      verbose=TRUE)
+#Track reads
+track_hadza <- cbind(sapply(derepFs_hadza[samples_to_keep_hadza], getN),
+                   sapply(derepRs_hadza[samples_to_keep_hadza], getN),
+                  sapply(dadaFs_hadza[samples_to_keep_hadza], getN), 
+                  sapply(dadaRs_hadza[samples_to_keep_hadza], getN),
+                  sapply(mergers_hadza, getN))
+track_hadza <- cbind(track_hadza, 100*track_hadza[,5]/track_hadza[,4])
+#Sequence table
+seqtab_hadza <- makeSequenceTable(mergers_hadza)
+write.csv(seqtab_hadza, "seqtab_tanzania.csv")
+```
+## Tibet
+```{r}
+path_tibet <- "/Users/admin/Documents/R/JOHI/fastq/fastq_Tibet"
+# Adding Tibet files
+fnFs_tibet <- sort(list.files(path_tibet, pattern="_1.fastq", full.names = TRUE))
+fnRs_tibet <- sort(list.files(path_tibet, pattern="_2.fastq", full.names = TRUE))
+sample.namesF_tibet <- sapply(strsplit(basename(fnFs_tibet), "_1"), `[`, 1)
+sample.namesR_tibet <- sapply(strsplit(basename(fnRs_tibet), "_2"), `[`, 1)
+#Filter and trim 
+filtFs_tibet <- file.path(path_tibet, "dada2_filtered",
+                             paste0(sample.namesF_tibet, "_F_filt.fastq.gz"))
+filtRs_tibet <- file.path(path_tibet, "dada2_filtered",
+                             paste0(sample.namesR_tibet, "_R_filt.fastq.gz"))
+names(filtFs_tibet) <- sample.namesF_tibet
+names(filtRs_tibet) <- sample.namesR_tibet
+# Check parameters
+out_tibet <- filterAndTrim(fnFs_tibet, filtFs_tibet, fnRs_tibet, filtRs_tibet,
+                              truncLen=c(220,200), maxN=0, maxEE=c(6,8), truncQ=c(2,2),
+                     rm.phix=TRUE, verbose=TRUE, matchIDs=FALSE,
+                     compress=TRUE, multithread=TRUE)
+# Check retained reads
+retained_tibet <- as.data.frame(out_tibet)
+retained_tibet$percentage_retained <- retained_tibet$reads.out/retained_tibet$reads.in*100
+rownames(retained_tibet) <-  sample.namesF_tibet
+retained_tibet <- retained_tibet %>%
+  mutate(Country = "China")
+retained_tibet <- retained_tibet[,c(4,1,2,3)]
+# Learn error rate
+errF_tibet <- learnErrors(filtFs_tibet, multithread=TRUE)
+errR_tibet <- learnErrors(filtRs_tibet, multithread=TRUE)
+#Dereplication
+derepFs_tibet <- derepFastq(filtFs_tibet, verbose=TRUE)
+derepRs_tibet <- derepFastq(filtRs_tibet, verbose=TRUE)
+#Name the derep-class objects by the sample names
+names(derepFs_tibet) <- sample.namesF_tibet
+names(derepRs_tibet) <- sample.namesR_tibet
+#Sample inference
+dadaFs_tibet <- dada(derepFs_tibet, err=errF_tibet, multithread=TRUE)
+dadaRs_tibet <- dada(derepRs_tibet, err=errR_tibet, multithread=TRUE)
+#Track reads
+track_all_tibet <- cbind(sapply(derepFs_tibet, getN),
+                        sapply(derepRs_tibet, getN),
+                        sapply(dadaFs_tibet, getN),
+                        sapply(dadaRs_tibet, getN))
+samples_to_keep_tibet <- track_all_tibet[,4] > 100 
+#Merging
+mergers_tibet <- mergePairs(dadaFs_tibet[samples_to_keep_tibet],
+                      derepFs_tibet[samples_to_keep_tibet],
+                      dadaRs_tibet[samples_to_keep_tibet],
+                      derepRs_tibet[samples_to_keep_tibet],
+                      verbose=TRUE)
+#Track reads
+track_tibet <- cbind(sapply(derepFs_tibet[samples_to_keep_tibet], getN),
+                   sapply(derepRs_tibet[samples_to_keep_tibet], getN),
+                  sapply(dadaFs_tibet[samples_to_keep_tibet], getN), 
+                  sapply(dadaRs_tibet[samples_to_keep_tibet], getN),
+                  sapply(mergers_tibet, getN))
+track_tibet <- cbind(track_tibet, 100*track_tibet[,5]/track_tibet[,4])
+#Sequence table
+seqtab_tibet <- makeSequenceTable(mergers_tibet)
+write.csv(seqtab_tibet, "seqtab_tibet.csv")
+```
+## Peru
+```{r}
+path_peru_m <- "/Users/admin/Documents/R/JOHI/fastq/fastq_matse"
+path_peru_t <- "/Users/admin/Documents/R/JOHI/fastq/fastq_tunapuco"
+#Adding Peru's file
+fnFs_peru_t <- sort(list.files(path_peru_t, pattern="_1.fastq", full.names = TRUE))
+fnFs_peru_m <- sort(list.files(path_peru_m, pattern="_1.fastq", full.names = TRUE))
+sample.namesF_peru_t <- sapply(strsplit(basename(fnFs_peru_t), "_1"), `[`, 1)
+sample.namesF_peru_m <- sapply(strsplit(basename(fnFs_peru_m), "_1"), `[`, 1)
+# Tunapuco
+#Place filter files in filtered subdirectory
+filtFs_peru_t <- file.path(path_peru_t, "dada2_filtered",
+                           paste0(sample.namesF_peru_t, "_F_filt.fastq.gz"))
+names(filtFs_peru_t) <- sample.namesF_peru_t
+out_peru_t <- filterAndTrim(fnFs_peru_t, filtFs_peru_t, 
+                     truncLen=230, maxN=0, maxEE=6, truncQ=2,
+                     rm.phix=TRUE, verbose=TRUE, matchIDs=TRUE,
+                     compress=TRUE, multithread=TRUE) 
+# Check retained reads
+retained_peru_t <- as.data.frame(out_peru_t)
+retained_peru_t$percentage_retained <- retained_peru_t$reads.out/retained_peru_t$reads.in*100
+rownames(retained_peru_t) <-  sample.namesF_peru_t
+retained_peru_t <- retained_peru_t %>%
+  mutate(Country = "Peru_T")
+retained_peru_t <- retained_peru_t[,c(4,1,2,3)]
+#Matses
+filtFs_peru_m <- file.path(path_peru_m, "dada2_filtered", paste0(sample.namesF_peru_m, "_F_filt.fastq.gz"))
+names(filtFs_peru_m) <- sample.namesF_peru_m
+out_peru_m <- filterAndTrim(fnFs_peru_m, filtFs_peru_m, 
+                     truncLen=95, maxN=0, maxEE=6, truncQ=2,
+                     rm.phix=TRUE, verbose=TRUE, matchIDs=TRUE,
+                     compress=TRUE, multithread=TRUE) 
+# Check retained reads
+retained_peru_m <- as.data.frame(out_peru_m)
+retained_peru_m$percentage_retained <- retained_peru_m$reads.out/retained_peru_m$reads.in*100
+rownames(retained_peru_m) <-  sample.namesF_peru_m
+retained_peru_m <- retained_peru_m %>%
+  mutate(Country = "Peru_M")
+retained_peru_m <- retained_peru_m[,c(4,1,2,3)]
+#Learn error rate
+errF_peru_t <- learnErrors(filtFs_peru_t, multithread=TRUE)
+errF_peru_m <- learnErrors(filtFs_peru_m, multithread=TRUE)
+# Dereplication
+derepFs_peru_t <- derepFastq(filtFs_peru_t, verbose=TRUE)
+derepFs_peru_m <- derepFastq(filtFs_peru_m, verbose=TRUE)
+# Name the derep-class objects by the sample names
+names(derepFs_peru_t) <- sample.namesF_peru_t
+names(derepFs_peru_m) <- sample.namesF_peru_m
+#Sample inference
+dadaFs_peru_t <- dada(derepFs_peru_t, err=errF_peru_t, multithread=TRUE)
+dadaFs_peru_m <- dada(derepFs_peru_m, err=errF_peru_m, multithread=TRUE)
+#Track reads
+track_all_peru_t <- cbind(sapply(derepFs_peru_t, getN),
+                        sapply(dadaFs_peru_t, getN))
+track_all_peru_m <- cbind(sapply(derepFs_peru_m, getN),
+                        sapply(dadaFs_peru_m, getN))
+samples_to_keep_peru_t <- track_all_peru_t[,2] > 1000 
+samples_to_keep_peru_m <- track_all_peru_m[,2] > 1000 
+track_peru_t <- cbind(sapply(derepFs_peru_t[samples_to_keep_peru_t], getN),
+                   "Single_reads",
+                  sapply(dadaFs_peru_t[samples_to_keep_peru_t], getN), 
+                  "Single_reads",
+                  "No_merging", "No_merging")
+track_peru_m <- cbind(sapply(derepFs_peru_m[samples_to_keep_peru_m], getN),
+                   "Single_reads",
+                  sapply(dadaFs_peru_m[samples_to_keep_peru_m], getN), 
+                  "Single_reads",
+                  "No_merging", "No_merging")
+#Sequence table
+seqtab_peru_t <- makeSequenceTable(dadaFs_peru_t[samples_to_keep_peru_t=TRUE])
+seqtab_peru_m <- makeSequenceTable(dadaFs_peru_m[samples_to_keep_peru_m==TRUE])
+write.csv(seqtab_peru_m, "seqtab_peru_m.csv")
+write.csv(seqtab_peru_t, "seqtab_peru_t.csv")
+```
+## Sweden
+```{r}
+path_sweden <- "/Users/admin/Documents/R/JOHI/fastq/fastq_sweden"
+# Adding Hadza files
+fnFs_sweden <- sort(list.files(path_sweden, pattern="_1.fastq", full.names = TRUE))
+fnRs_sweden <- sort(list.files(path_sweden, pattern="_2.fastq", full.names = TRUE))
+sample.namesF_sweden <- sapply(strsplit(basename(fnFs_sweden), "_1"), `[`, 1)
+sample.namesR_sweden <- sapply(strsplit(basename(fnRs_sweden), "_2"), `[`, 1)
+# Filter and trim
+filtFs_sweden <- file.path(path_sweden, "dada2_filtered",
+                             paste0(sample.namesF_sweden, "_F_filt.fastq.gz"))
+filtRs_sweden <- file.path(path_sweden, "dada2_filtered",
+                             paste0(sample.namesR_sweden, "_R_filt.fastq.gz"))
+names(filtFs_sweden) <- sample.namesF_sweden
+names(filtRs_sweden) <- sample.namesR_sweden
+# Parameters
+out_sweden <- filterAndTrim(fnFs_sweden, filtFs_sweden, fnRs_sweden, filtRs_sweden,
+                              truncLen=c(230,200), maxN=0, maxEE=c(6,8), truncQ=c(2,2),
+                     rm.phix=TRUE, verbose=TRUE, matchIDs=FALSE,
+                     compress=TRUE, multithread=TRUE)
+# Check retained reads
+retained_sweden <- as.data.frame(out_sweden)
+retained_sweden$percentage_retained <- retained_sweden$reads.out/retained_sweden$reads.in*100
+rownames(retained_sweden) <-  sample.namesF_sweden
+retained_sweden <- retained_sweden %>%
+  mutate(Country = "Sweden")
+retained_sweden <- retained_sweden[,c(4,1,2,3)]
+#Learn error rate
+errF_sweden <- learnErrors(filtFs_sweden, multithread=TRUE)
+errR_sweden <- learnErrors(filtRs_sweden, multithread=TRUE)
+#Dereplication
+derepFs_sweden <- derepFastq(filtFs_sweden, verbose=TRUE)
+derepRs_sweden <- derepFastq(filtRs_sweden, verbose=TRUE)
+#Name the derep-class objects by the sample names
+names(derepFs_sweden) <- sample.namesF_sweden
+names(derepRs_sweden) <- sample.namesR_sweden
+#Sample inference
+dadaFs_sweden <- dada(derepFs_sweden, err=errF_sweden, multithread=TRUE)
+dadaRs_sweden <- dada(derepRs_sweden, err=errR_sweden, multithread=TRUE)
+#Track reads
+track_all_sweden <- cbind(sapply(derepFs_sweden, getN),
+                        sapply(derepRs_sweden, getN),
+                        sapply(dadaFs_sweden, getN),
+                        sapply(dadaRs_sweden, getN))
+samples_to_keep_sweden <- track_all_sweden[,4] > 1000 
+# Merge
+mergers_sweden <- mergePairs(dadaFs_sweden[samples_to_keep_sweden],
+                      derepFs_sweden[samples_to_keep_sweden],
+                      dadaRs_sweden[samples_to_keep_sweden],
+                      derepRs_sweden[samples_to_keep_sweden],
+                      verbose=TRUE)
+#Track reads
+track_sweden <- cbind(sapply(derepFs_sweden[samples_to_keep_sweden], getN),
+                   sapply(derepRs_sweden[samples_to_keep_sweden], getN),
+                  sapply(dadaFs_sweden[samples_to_keep_sweden], getN), 
+                  sapply(dadaRs_sweden[samples_to_keep_sweden], getN),
+                  sapply(mergers_sweden, getN))
+track_sweden <- cbind(track_sweden, 100*track_sweden[,5]/track_sweden[,4])
+#Sequence table
+seqtab_sweden <- makeSequenceTable(mergers_sweden)
+write.csv(seqtab_sweden, "seqtab_sweden.csv")
+```
+## USA
+```{r}
+path_usa <- "/Users/admin/Documents/R/JOHI/fastq/fastq_usa"
+# Adding USA files
+fnFs_usa <- sort(list.files(path_usa, pattern="R1_001.fastq", full.names = TRUE))
+fnRs_usa <- sort(list.files(path_usa, pattern="R2_001.fastq", full.names = TRUE))
+sample.namesF_usa <- sapply(strsplit(basename(fnFs_usa), "_[1234567890]"), `[`, 1)
+sample.namesR_usa <- sapply(strsplit(basename(fnRs_usa), "_[1234567890]"), `[`, 1)
+# Filter and trim
+filtFs_usa <- file.path(path_usa, "dada2_filtered",
+                             paste0(sample.namesF_usa, "_F_filt.fastq.gz"))
+filtRs_usa <- file.path(path_usa, "dada2_filtered",
+                             paste0(sample.namesR_usa, "_R_filt.fastq.gz"))
+names(filtFs_usa) <- sample.namesF_usa
+names(filtRs_usa) <- sample.namesR_usa
+# Parameters
+out_usa <- filterAndTrim(fnFs_usa, filtFs_usa, fnRs_usa, filtRs_usa,
+                              truncLen=c(145,145), maxN=0, maxEE=c(6,8), truncQ=c(2,2),
+                     rm.phix=TRUE, verbose=TRUE, matchIDs=FALSE,
+                     compress=TRUE, multithread=TRUE)
+# Check retained reads
+retained_usa <- as.data.frame(out_usa)
+retained_usa$percentage_retained <- retained_usa$reads.out/retained_usa$reads.in*100
+rownames(retained_usa) <-  sample.namesF_usa
+retained_usa <- retained_usa %>%
+  mutate(Country = "USA")
+retained_usa <- retained_usa[,c(4,1,2,3)]
+#Learn error rate
+errF_usa <- learnErrors(filtFs_usa, multithread=TRUE)
+errR_usa <- learnErrors(filtRs_usa, multithread=TRUE)
+#Dereplication
+derepFs_usa <- derepFastq(filtFs_usa, verbose=TRUE)
+derepRs_usa <- derepFastq(filtRs_usa, verbose=TRUE)
+#Name the derep-class objects by the sample names
+names(derepFs_usa) <- sample.namesF_usa
+names(derepRs_usa) <- sample.namesR_usa
+#Sample inference
+dadaFs_usa <- dada(derepFs_usa, err=errF_usa, multithread=TRUE)
+dadaRs_usa <- dada(derepRs_usa, err=errR_usa, multithread=TRUE)
+#Track reads
+track_all_usa <- cbind(sapply(derepFs_usa, getN),
+                        sapply(derepRs_usa, getN),
+                        sapply(dadaFs_usa, getN),
+                        sapply(dadaRs_usa, getN))
+samples_to_keep_usa <- track_all_usa[,4] > 1000 
+# Merge
+mergers_usa <- mergePairs(dadaFs_usa[samples_to_keep_usa],
+                      derepFs_usa[samples_to_keep_usa],
+                      dadaRs_usa[samples_to_keep_usa],
+                      derepRs_usa[samples_to_keep_usa],
+                      verbose=TRUE)
+#Track reads
+track_usa <- cbind(sapply(derepFs_usa[samples_to_keep_usa], getN),
+                   sapply(derepRs_usa[samples_to_keep_usa], getN),
+                  sapply(dadaFs_usa[samples_to_keep_usa], getN), 
+                  sapply(dadaRs_usa[samples_to_keep_usa], getN),
+                  sapply(mergers_usa, getN))
+track_usa <- cbind(track_usa, 100*track_usa[,5]/track_usa[,4])
+#Sequence table
+seqtab_usa <- makeSequenceTable(mergers_usa)
+write.csv(seqtab_usa, "seqtab_usa.csv")
+```
+## Yatsunenko
+```{r}
+path_yatsu <- "/Users/admin/Documents/R/JOHI/fastq/fastq_yatsu"
+# Adding Yatsunenko files
+fnFs_yatsu <- sort(list.files(path_yatsu, pattern=".fastq", full.names = TRUE))
+sample.namesF_yatsu <- sapply(strsplit(basename(fnFs_yatsu), ".fastq"), `[`, 1)
+# Filter and trim
+filtFs_yatsu <- file.path(path_yatsu, "dada2_filtered",
+                             paste0(sample.namesF_yatsu, "_F_filt.fastq.gz"))
+names(filtFs_yatsu) <- sample.namesF_yatsu
+# Parameters
+out_yatsu <- filterAndTrim(fnFs_yatsu, filtFs_yatsu,
+                              truncLen=95, maxN=0, maxEE=6, truncQ=2,
+                     rm.phix=TRUE, verbose=TRUE,
+                     compress=TRUE, multithread=TRUE)
+# Check retained reads
+retained_yatsu <- as.data.frame(out_yatsu)
+retained_yatsu$percentage_retained <- retained_yatsu$reads.out/retained_yatsu$reads.in*100
+rownames(retained_yatsu) <-  sample.namesF_yatsu
+retained_yatsu <- retained_yatsu %>%
+  mutate(Country = "Yatsunenko_study")
+retained_yatsu <- retained_yatsu[,c(4,1,2,3)]
+#Learn error rate
+errF_yatsu <- learnErrors(filtFs_yatsu, multithread=TRUE)
+#Dereplication
+derepFs_yatsu <- derepFastq(filtFs_yatsu, verbose=TRUE)
+#Name the derep-class objects by the sample names
+names(derepFs_yatsu) <- sample.namesF_yatsu
+#Sample inference
+dadaFs_yatsu <- dada(derepFs_yatsu, err=errF_yatsu, multithread=TRUE)
+#Track reads
+track_all_yatsu <- cbind(sapply(derepFs_yatsu, getN),
+                        sapply(dadaFs_yatsu, getN))
+samples_to_keep_yatsu <- track_all_yatsu[,2] > 1000
+track_yatsu <- cbind(sapply(derepFs_yatsu[samples_to_keep_yatsu], getN),
+                  "Single_reads",
+                  sapply(dadaFs_yatsu[samples_to_keep_yatsu], getN), 
+                  "Single_reads",
+                  "No_merging", "No_merging")
+#Sequence table
+seqtab_yatsu <- makeSequenceTable(dadaFs_yatsu[samples_to_keep_yatsu=TRUE])
+write.csv(seqtab_yatsu, "seqtab_yatsu.csv")
+```
+## Pehrsson
+```{r}
+path_pehrs <- "/Users/admin/Documents/R/JOHI/fastq/fastq_pehrsson"
+# Adding Pehrsson files
+fnFs_pehrs <- sort(list.files(path_pehrs, pattern=".fastq", full.names = TRUE))
+sample.namesF_pehrs <- sapply(strsplit(basename(fnFs_pehrs), ".fastq"), `[`, 1)
+# Filter and trim
+filtFs_pehrs <- file.path(path_pehrs, "dada2_filtered",
+                             paste0(sample.namesF_pehrs, "_F_filt.fastq.gz"))
+names(filtFs_pehrs) <- sample.namesF_pehrs
+# Parameters
+out_pehrs <- filterAndTrim(fnFs_pehrs, filtFs_pehrs,
+                              truncLen=240, maxN=0, maxEE=6, truncQ=2,
+                     rm.phix=TRUE, verbose=TRUE,
+                     compress=TRUE, multithread=TRUE)
+# Check retained reads
+retained_pehrs <- as.data.frame(out_pehrs)
+retained_pehrs$percentage_retained <- retained_pehrs$reads.out/retained_pehrs$reads.in*100
+rownames(retained_pehrs) <-  sample.namesF_pehrs
+retained_pehrs <- retained_pehrs %>%
+  mutate(Country = "Salvador_Peru")
+retained_pehrs <- retained_pehrs[,c(4,1,2,3)]
+#Learn error rate
+errF_pehrs <- learnErrors(filtFs_pehrs, multithread=TRUE)
+#Dereplication
+derepFs_pehrs <- derepFastq(filtFs_pehrs, verbose=TRUE)
+#Name the derep-class objects by the sample names
+names(derepFs_pehrs) <- sample.namesF_pehrs
+#Sample inference
+dadaFs_pehrs <- dada(derepFs_pehrs, err=errF_pehrs, multithread=TRUE)
+#Track reads
+track_all_pehrs <- cbind(sapply(derepFs_pehrs, getN),
+                        sapply(dadaFs_pehrs, getN))
+samples_to_keep_pehrs <- track_all_pehrs[,2] > 1000 
+track_pehrs <- cbind(sapply(derepFs_pehrs[samples_to_keep_pehrs], getN),
+                   "Single_reads",
+                  sapply(dadaFs_pehrs[samples_to_keep_pehrs], getN), 
+                  "Single_reads",
+                  "No_merging", "No_merging")
+#Sequence table
+seqtab_pehrs <- makeSequenceTable(dadaFs_pehrs[samples_to_keep_pehrs=TRUE])
+write.csv(seqtab_pehrs, "seqtab_pehrsson.csv")
+```
+## Bangladesh
+```{r}
+path_bangladesh <- "/Users/admin/Documents/R/JOHI/fastq/fastq_bangladesh"
+# Adding Bangladesh files
+fnFs_bangladesh <- sort(list.files(path_bangladesh, pattern="_1.fastq", full.names = TRUE))
+fnRs_bangladesh <- sort(list.files(path_bangladesh, pattern="_2.fastq", full.names = TRUE))
+sample.namesF_bangladesh <- sapply(strsplit(basename(fnFs_bangladesh), "_1"), `[`, 1)
+sample.namesR_bangladesh <- sapply(strsplit(basename(fnRs_bangladesh), "_2"), `[`, 1)
+# Filter and trim
+filtFs_bangladesh <- file.path(path_bangladesh, "dada2_filtered",
+                             paste0(sample.namesF_bangladesh, "_F_filt.fastq.gz"))
+filtRs_bangladesh <- file.path(path_bangladesh, "dada2_filtered",
+                             paste0(sample.namesR_bangladesh, "_R_filt.fastq.gz"))
+names(filtFs_bangladesh) <- sample.namesF_bangladesh
+names(filtRs_bangladesh) <- sample.namesR_bangladesh
+# Parameters
+out_bangladesh <- filterAndTrim(fnFs_bangladesh, filtFs_bangladesh, fnRs_bangladesh, filtRs_bangladesh,
+                              truncLen=c(220,180), maxN=0, maxEE=c(6,8),
+                              truncQ=c(2,2), rm.phix=TRUE, verbose=TRUE,
+                              matchIDs = FALSE,
+                              compress=TRUE, multithread=TRUE) 
+# Check retained reads
+retained_bangladesh <- as.data.frame(out_bangladesh)
+retained_bangladesh$percentage_retained <- retained_bangladesh$reads.out/retained_bangladesh$reads.in*100
+rownames(retained_bangladesh) <-  sample.namesF_bangladesh
+retained_bangladesh <- retained_bangladesh %>%
+  mutate(Country = "Bangladesh")
+retained_bangladesh <- retained_bangladesh[,c(4,1,2,3)]
+#Learn error rate
+errF_bangladesh <- learnErrors(filtFs_bangladesh, multithread=TRUE)
+errR_bangladesh <- learnErrors(filtRs_bangladesh, multithread=TRUE)
+#Dereplication
+derepFs_bangladesh <- derepFastq(filtFs_bangladesh, verbose=TRUE)
+derepRs_bangladesh <- derepFastq(filtRs_bangladesh, verbose=TRUE)
+#Name the derep-class objects by the sample names
+names(derepFs_bangladesh) <- sample.namesF_bangladesh
+names(derepRs_bangladesh) <- sample.namesR_bangladesh
+#Sample inference
+dadaFs_bangladesh <- dada(derepFs_bangladesh, err=errF_bangladesh, multithread=TRUE)
+dadaRs_bangladesh <- dada(derepRs_bangladesh, err=errR_bangladesh, multithread=TRUE)
+#Track reads
+track_all_bangladesh <- cbind(sapply(derepFs_bangladesh, getN),
+                        sapply(derepRs_bangladesh, getN),
+                        sapply(dadaFs_bangladesh, getN),
+                        sapply(dadaRs_bangladesh, getN))
+samples_to_keep_bangladesh <- track_all_bangladesh[,4] > 1000 
+#Merge
+mergers_bangladesh <- mergePairs(dadaFs_bangladesh[samples_to_keep_bangladesh],
+                      derepFs_bangladesh[samples_to_keep_bangladesh],
+                      dadaRs_bangladesh[samples_to_keep_bangladesh],
+                      derepRs_bangladesh[samples_to_keep_bangladesh],
+                      verbose=TRUE)
+#Track reads
+track_bangladesh <- cbind(sapply(derepFs_bangladesh[samples_to_keep_bangladesh], getN),
+                   sapply(derepRs_bangladesh[samples_to_keep_bangladesh], getN),
+                  sapply(dadaFs_bangladesh[samples_to_keep_bangladesh], getN), 
+                  sapply(dadaRs_bangladesh[samples_to_keep_bangladesh], getN),
+                  sapply(mergers_bangladesh, getN))
+track_bangladesh <- cbind(track_bangladesh, 100*track_bangladesh[,5]/track_bangladesh[,4])
+#Sequence table
+seqtab_bangladesh <- makeSequenceTable(mergers_bangladesh)
+write.csv(seqtab_bangladesh, "seqtab_bangladesh.csv")
+```
+Save retained file
+```{r}
+write.csv(retained_johi, "retained_johi.csv")
+write.csv(retained_cameroon, "retained_cameroon.csv")
+write.csv(retained_hadza, "retained_tanzania.csv")
+write.csv(retained_tibet, "retained_china.csv")
+write.csv(retained_peru_m, "retained_peru_m.csv")
+write.csv(retained_peru_t, "retained_peru_t.csv")
+write.csv(retained_sweden, "retained_sweden.csv")
+write.csv(retained_usa, "retained_usa.csv")
+write.csv(retained_yatsu, "retained_yatsunenko.csv")
+write.csv(retained_pehrs, "retained_pehrsson.csv")
+write.csv(retained_bangladesh, "retained_bangladesh.csv")
+```
+Merge sequence table and remove chimeras
+```{r}
+seqtab_ps2 <- mergeSequenceTables(seqtab_johi, seqtab_cameroon, seqtab_hadza, seqtab_tibet,
+                              seqtab_peru_m, seqtab_peru_t, seqtab_sweden, seqtab_usa, 
+                              seqtab_yatsu, seqtab_pehrs, seqtab_bangladesh)
+# Remove chimeras
+seqtab.nochim_ps2 <- removeBimeraDenovo(seqtab_ps2, method = "pooled", multithread = TRUE, verbose = TRUE)
+```
+Track reads
+```{r}
+retained_ps2 <- rbind(retained_johi[samples_to_keep_johi_ps2,], retained_cameroon[samples_to_keep_cameroon,],
+                  retained_hadza[samples_to_keep_hadza,], retained_tibet[samples_to_keep_tibet,],
+                  retained_peru_m[samples_to_keep_peru_m,], retained_peru_t[samples_to_keep_peru_t,],
+                  retained_sweden[samples_to_keep_sweden,], retained_usa[samples_to_keep_usa,],
+                  retained_yatsu[samples_to_keep_yatsu,], retained_pehrs[samples_to_keep_pehrs,],
+                  retained_bangladesh[samples_to_keep_bangladesh,])
+track_ps2 <- rbind(track_johi_ps2, track_cameroon, track_hadza, track_tibet, track_peru_m,
+               track_peru_t, track_sweden, track_usa, track_yatsu, track_pehrs,
+               track_bangladesh)
+track_reads_ps2 <- cbind(retained_ps2, track_ps2, rowSums(seqtab.nochim_ps2))
+# Adding percent_chimeras in track
+track_reads_ps2 <- cbind(track_reads_ps2, 100-track_reads_ps2[,11]/track_reads_ps2[,9]*100)
+colnames(track_reads_ps2) <- c("Country", "input", "filtered","retained",
+                           "derepF", "derepR", "denoisedF", "denoisedR", "merged", 
+                           "percent_merged", "nochimeras", "percent_chimeras")
+write.csv(track_reads_ps2, "read_retention_table_primer_set2.csv")
+```
+Assign taxonomy
+```{r}
+#Assign taxonomy
+taxa_ps2 <- assignTaxonomy(seqtab.nochim_ps2,"/Users/admin/Documents/R/JOHI/silva_nr99_v138.1_wSpecies_train_set.fa.gz",multithread = TRUE)
+NAs_ps2 <- is.na(taxa_ps2[,1])
+NAs_ps2 <- which(NAs_ps2 == TRUE)
+taxa_ps2[NAs,1:7] <- "Unassigned"
+write.table(seqtab.nochim_ps2, "sequence_table_primer_set2.txt",quote = F, row.names = T, col.names = T, sep = "\t")
+write.table(taxa_ps2, "taxonomy_table_primer_set2.txt", quote = F, row.names = T, col.names = T, sep = "\t")
+```

@@ -1,0 +1,1584 @@
+RMarkDown file for primer set 2 dataset analysis. 
+
+#Loading library
+```{r}
+library(Biostrings)
+library(devtools)
+library(phyloseq)
+library(tidyr)
+library(plyr)
+library(readxl)
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(vegan)
+library(microbiome)
+library(ape)
+library(ggpubr)
+library(ggsignif)
+library(pheatmap)
+library(picante)
+library(magrittr)
+library(clusterCrit)
+library(RColorBrewer)
+library(ggcorrplot)
+library(ggprism)
+library(glue)
+library(DECIPHER)
+library(phangorn)
+library(QsRutils)
+```
+
+#Phyloseq dataframe creation
+# Taxonomy table
+```{r}
+tax <- read_excel("Tables/Additional\ file\ 3.xlsx", sheet = "Primer_set2_Tax_table")
+tax <- tax %>%
+  mutate(ASV = paste("ASV", seq(1:nrow(tax)), sep="")) %>%
+  mutate(SEQ = rownames(tax))
+row.names(tax) <- tax$ASV
+which(duplicated(row.names(tax))==TRUE)
+correspondence <-tax[,c(8:9)]
+tax=as.matrix(tax)
+tax <- tax[,-(8:9)]
+taxonomy <- tax_table(tax)
+``` 
+# OTU table
+```{r}
+otu_1 <- read_excel("Tables/Additional\ file\ 4.xlsx")
+otu_2 <- read_excel("Tables/Additional\ file\ 5.xlsx")
+otu <- rbind(otu_1, otu_2)
+otu <- t(otu)
+otu_df <- as.data.frame(otu)
+# OTU matrix table of 12749 rows (sequences) and 584 columns (samples)
+row.names(correspondence) <- correspondence$SEQ
+otu <- cbind(correspondence, otu)
+row.names(otu)<-otu$ASV
+otu <- otu[,-(1:2) ]
+otu<-as.matrix(otu)
+class(otu) <- "numeric"
+taxa=otu_table(otu, taxa_are_rows = TRUE)
+```
+# Phylogenetic Tree
+Phylogenetic tree construction adapted from: Callahan BJ, Sankaran K, Fukuyama JA et al. Bioconductor Workflow for Microbiome Data Analysis: from raw reads to community analyses [version 2; peer review: 3 approved]. F1000Research 2016, 5:1492 (https://doi.org/10.12688/f1000research.8986.2)
+```{r}
+# sequences for alignement
+seqs <- correspondence$SEQ
+names(seqs) <- seqs
+# DNAStringSet is a DNA sequences object 
+# Performs profile-to-profile alignment of multiple unaligned sequences following a guide tree
+# x is a DNA StringSet object of unaligned
+# No dendrogram provided so a guide tree will be automatically constructed based on the order of shared k-mers
+alignement <- AlignSeqs(DNAStringSet(seqs), anchor = NA)
+# DNAStringSet object of length 15266:
+        # width seq 740
+### phangorn is a package for phylogenetic reconstruction and analysis
+# transform several DNA formats into the 'phyDat' format
+phang.align <- phyDat(as(alignement, "matrix"), type="DNA")
+# 15'266 sequences with 740 characters and 587 different site patterns
+# The states are A C G T
+# compute pairwise distances for an object of class phyDat
+dm <- dist.ml(phang.align)
+# Distance matrix 
+# performs the neighbor-joining tree estimation
+treeNJ <- NJ(dm) # Note, tip order != sequence order
+# computes the likelihood of a phylogenetic tree given a sequence alignment and a model
+fit = pml(treeNJ, data=phang.align)
+## negative edges length changed to 0!
+# pdate and (by default) re-fit a mode
+fitGTR <- update(fit, k=4, inv=0.2)
+#optimizes the different model parameters
+fitGTR <- optim.pml(fitGTR, model="GTR", optInv=TRUE, optGamma=TRUE,
+                      rearrangement = "stochastic", control = pml.control(trace = 0))
+pg_tree <- phy_tree(fitGTR$tree)
+# Change names from SEQ to ASV
+pg_tree2 <- pg_tree
+taxa_names(pg_tree2) <- correspondence$ASV
+```
+# Metadata
+```{r}
+md_ps2 <- read_excel("Tables/Additional\ file\ 2.xlsx", sheet = "Primer_set2_metadata")
+md_ps2 <- as.data.frame(md_ps2)
+rownames(md_ps2) <- md_ps2$fastqID
+metadata_ps2 <- sample_data(md_ps2)
+```
+## Phyloseq
+```{r}
+# Phyloseq object creation from the sequence and taxonomy table 
+physeq= phyloseq(taxa, taxonomy)
+physeq = merge_phyloseq(metadata, physeq) 
+physeq <- subset_samples(physeq, Age >= 2) # 716 Samples Removed 1 Peru and 1 Tibet
+# Add phylo tree
+physeq_phylo <- merge_phyloseq(physeq, pg_tree2)
+# Rooting tree
+physeq <- root_phyloseq_tree(physeq_phylo)
+```
+# Filtering
+```{r}
+# Removing samples with less than 5'000 reads
+physeq_5 <- physeq
+# Removing 20 samples 
+physeq_5 <- prune_samples(sample_sums(physeq_5) > 5000, physeq_5) # down to 696 samples instead of 716 (15'266 taxa)
+# filter out Unassigned, Chloroplast, Mitochondria and Eukaryota
+physeq_filtered <- physeq_5 %>%
+  subset_taxa(Family != "Mitochondria") %>%
+  subset_taxa(Order != "Chloroplast") %>%
+  subset_taxa(Kingdom !="Unassigned") %>%
+  subset_taxa(Kingdom != "Eukaryota")
+physeq_filtered <- prune_samples(sample_sums(physeq_filtered) > 5000, physeq_filtered)
+# Relative abundance
+physeq_ra <- transform_sample_counts(physeq_filtered, function(x) x / sum(x))
+```
+Subset by country
+```{r}
+#physeq Ethiopia
+physeq_ethiopia <- subset_samples(physeq_filtered, Country=="Ethiopia")
+physeq_ethiopia #13 samples
+# Removing taxa with abundance 0
+physeq_ethiopia <- prune_taxa(taxa_sums(physeq_ethiopia)> 0, physeq_ethiopia)
+# Relative abundance
+physeq_ethiopia <- transform_sample_counts(physeq_ethiopia, function(x) x / sum(x))
+physeq_ethiopia #1'197 taxa
+
+#physeq Tanzania
+physeq_tanzania <- subset_samples(physeq_filtered, Country=="Tanzania")
+physeq_tanzania #35 samples
+# Removing taxa with abundance 0
+physeq_tanzania <- prune_taxa(taxa_sums(physeq_tanzania)> 0, physeq_tanzania)
+# Relative abundance
+physeq_tanzania <- transform_sample_counts(physeq_tanzania, function(x) x / sum(x))
+physeq_tanzania #697 taxa
+
+#physeq Cameroon
+physeq_cameroon <- subset_samples(physeq_filtered, Country=="Cameroon")
+physeq_cameroon #5 samples
+# Removing taxa with abundance 0
+physeq_cameroon <- prune_taxa(taxa_sums(physeq_cameroon)> 0, physeq_cameroon)
+# Relative abundance
+physeq_cameroon <- transform_sample_counts(physeq_cameroon, function(x) x / sum(x))
+physeq_cameroon #506 taxa
+
+# physeq Tibet
+physeq_tibet <- subset_samples(physeq_filtered, Country=="China")
+physeq_tibet #24 samples
+# Removing taxa with abundance 0
+physeq_tibet <- prune_taxa(taxa_sums(physeq_tibet)> 0, physeq_tibet)
+# Relative abundance
+physeq_tibet <- transform_sample_counts(physeq_tibet, function(x) x / sum(x))
+physeq_tibet #789 taxa
+
+# physeq Peru
+# Traditional
+physeq_peru_tradi <- subset_samples(physeq_filtered, Country=="Peru_traditional")
+physeq_peru_tradi #11 samples
+# Removing taxa with abundance 0
+physeq_peru_tradi <- prune_taxa(taxa_sums(physeq_peru_tradi)> 0, physeq_peru_tradi)
+# Relative abundance
+physeq_peru_tradi <- transform_sample_counts(physeq_peru_tradi, function(x) x / sum(x))
+physeq_peru_tradi # 1'062 taxa
+
+# physeq Peru
+# Transitional
+physeq_peru_transi <- subset_samples(physeq_filtered, Country=="Peru_transitional")
+physeq_peru_transi #8 samples
+# Removing taxa with abundance 0
+physeq_peru_transi <- prune_taxa(taxa_sums(physeq_peru_transi)> 0, physeq_peru_transi)
+# Relative abundance
+physeq_peru_transi <- transform_sample_counts(physeq_peru_transi, function(x) x / sum(x))
+physeq_peru_transi # 236 taxa
+
+# physeq Sweden
+physeq_sweden <- subset_samples(physeq_filtered, Country=="Sweden")
+physeq_sweden #335 samples
+# Removing taxa with abundance 0
+physeq_sweden <- prune_taxa(taxa_sums(physeq_sweden)> 0, physeq_sweden)
+# Relative abundance
+physeq_sweden <- transform_sample_counts(physeq_sweden, function(x) x / sum(x))
+physeq_sweden # 4'692 taxa
+
+# physeq USA
+physeq_usa <- subset_samples(physeq_filtered, Country=="USA")
+physeq_usa # 149 samples
+# Removing taxa with abundance 0
+physeq_usa <- prune_taxa(taxa_sums(physeq_usa)> 0, physeq_usa)
+# Relative abundance
+physeq_usa <- transform_sample_counts(physeq_usa, function(x) x / sum(x))
+physeq_usa # 3'662 taxa
+
+
+# physeq Malawi
+physeq_malawi <- subset_samples(physeq_filtered, Country=="Malawi")
+physeq_malawi # 13 samples
+# Removing taxa with abundance 0
+physeq_malawi <- prune_taxa(taxa_sums(physeq_malawi)> 0, physeq_malawi)
+# Relative abundance
+physeq_malawi <- transform_sample_counts(physeq_malawi, function(x) x / sum(x))
+physeq_malawi # 1'209 taxa
+
+# physeq venezuela
+physeq_venezuela <- subset_samples(physeq_filtered, Country=="Venezuela")
+physeq_venezuela #19 samples
+# Removing taxa with abundance 0
+physeq_venezuela <- prune_taxa(taxa_sums(physeq_venezuela)> 0, physeq_venezuela)
+# Relative abundance
+physeq_venezuela <- transform_sample_counts(physeq_venezuela, function(x) x / sum(x))
+physeq_venezuela # 1'240 taxa 
+
+# physeq El Salvador
+physeq_salvador <- subset_samples(physeq_filtered, Country=="El Salvador")
+physeq_salvador # 29 samples
+# Removing taxa with abundance 0
+physeq_salvador <- prune_taxa(taxa_sums(physeq_salvador)> 0, physeq_salvador)
+# Relative abundance
+physeq_salvador <- transform_sample_counts(physeq_salvador, function(x) x / sum(x))
+physeq_salvador # 440 taxa 
+
+# physeq bangladesh
+physeq_bangladesh <- subset_samples(physeq_filtered, Country=="Bangladesh")
+physeq_bangladesh # 51 samples
+# Removing taxa with abundance 0
+physeq_bangladesh <- prune_taxa(taxa_sums(physeq_bangladesh)> 0, physeq_bangladesh)
+# Relative abundance
+physeq_bangladesh <- transform_sample_counts(physeq_bangladesh, function(x) x / sum(x))
+physeq_bangladesh # 557 taxa 
+```
+Stats on sequencing
+````{r}
+sample_sums_df <- as.data.frame(sample_sums(physeq_filtered))
+names(sample_sums_df)[1] <- "Reads_per_sample" 
+sample_sums_df <- sample_sums_df %>%
+  mutate("fastqID" = rownames(sample_sums_df))
+sample_sums_df <- merge(sample_sums_df, md_all, by="fastqID")
+country_list <- as.data.frame(unique(md_all$Country))
+names(country_list)[1] <- "Country"
+df_seq <- matrix(ncol =9, nrow = 12)
+colnames(df_seq) <- c("#Samples", "mean", "max", "min", "sd", "sum", "<1'000", "<5'000", "<10'000")
+rownames(df_seq) <- country_list$Country
+for (j in 1:12){
+      df_seq[j,1] <- length(which(sample_sums_df$Country==country_list[j,]))
+      df_seq[j,2] <- mean(sample_sums(subset_samples(physeq_filtered, Country==country_list[j,])))
+      df_seq[j,3] <-  max(sample_sums(subset_samples(physeq_filtered, Country==country_list[j,])))
+      df_seq[j,4] <- min(sample_sums(subset_samples(physeq_filtered, Country==country_list[j,])))
+      df_seq[j,5] <- sd(sample_sums(subset_samples(physeq_filtered, Country==country_list[j,])))
+      df_seq[j,6] <- sum(sample_sums(subset_samples(physeq_filtered, Country==country_list[j,])))
+      df_seq[j,7] <- length(which(sample_sums_df$Reads_per_sample < 1000 & sample_sums_df$Country==country_list[j,]))
+      df_seq[j,8] <- length(which(sample_sums_df$Reads_per_sample < 5000 & sample_sums_df$Country==country_list[j,]))
+      df_seq[j,9] <- length(which(sample_sums_df$Reads_per_sample < 10000 & sample_sums_df$Country==country_list[j,]))
+      j = j+1
+}
+df_seq <- as.data.frame(df_seq) %>%
+  mutate(n_taxa = "")
+df_seq[1,10] <- as.numeric(ntaxa(physeq_ethiopia))
+df_seq[2,10] <- as.numeric(ntaxa(physeq_cameroon))
+df_seq[3,10] <- as.numeric(ntaxa(physeq_tanzania))
+df_seq[4,10] <- as.numeric(ntaxa(physeq_tibet))
+df_seq[5,10] <- as.numeric(ntaxa(physeq_peru_tradi))
+df_seq[6,10] <- as.numeric(ntaxa(physeq_sweden))
+df_seq[7,10] <- as.numeric(ntaxa(physeq_usa))
+df_seq[8,10] <- as.numeric(ntaxa(physeq_venezuela))
+df_seq[9,10] <- as.numeric(ntaxa(physeq_malawi))
+df_seq[10,10] <- as.numeric(ntaxa(physeq_peru_transi))
+df_seq[11,10] <- as.numeric(ntaxa(physeq_salvador))
+df_seq[12,10] <- as.numeric(ntaxa(physeq_bangladesh))
+write.csv(df_seq, "Sequencing_info_JOHIvsWorld.csv")
+```
+24hr recall
+```{r}
+# Stat on nutrition
+md_diet <- md_diet %>%
+  dplyr::filter(SampleID %in% as.matrix(sample_data(physeq_ethiopia)[,1]))
+100*(length(which(md_diet$chi24_milk == 1))/13) # 31%
+100*(length(which(md_diet$chi24_tea_milk == 1))/13) # 54%
+100*(length(which(md_diet$chi24_tea_milk == 1 | md_diet$chi24_milk == 1))/13) # 77%
+100*(length(which(md_diet$chi24_rice == 1))/13) # 7.7
+100*(length(which(md_diet$chi24_maize == 1))/13) # 15.4
+100*(length(which(md_diet$chi24_wheat == 1))/13) # 23.1
+100*(length(which(md_diet$chi24_wheatflour == 1))/13) # 7.7
+100*(length(which(md_diet$chi24_potato == 1))/13) # 7.7
+100*(length(which(md_diet$chi24_sorghum == 1))/13) # 0
+100*(length(which(md_diet$chi24_tomato == 1))/13) # 7.7
+100*(length(which(md_diet$chi24_onion == 1))/13) # 7.7
+```
+Color palette
+```{r}
+# Color palette for plots:
+palbrew_info <- brewer.pal.info[brewer.pal.info$category == "qual", ]  # Extract color info
+palbrew_all <- unlist(mapply(brewer.pal,                     # Create vector with all colors
+                              palbrew_info$maxcolors,
+                              rownames(palbrew_info)))
+# Palette for family boxplot
+pall_top <- palbrew_all[c(63,64,65,61,66,67,68,69,70,8,71,72,73,74)]
+# Palette PCoA WeightedUniFrac
+pal_all <- palbrew_all[61:74]
+# Palette PCoA WeightedUniFrac with ellipses
+pal_ellipse <- palbrew_all[c(69,66,67,68)]
+# Palette lifestyle for clustering
+pal_vanblo <- palbrew_all[c(69,66,67,68)]
+# Palette clusters 
+pal_all <- palbrew_all[16:26]
+```
+# Composition
+Phylum
+```{r}
+# Plot Ethiopia Phylum
+ethiopiaPhylum <- tax_glom(physeq_ethiopia, "Phylum")
+pdf("BarPlot_RelAbunPhyl_Eth.pdf", width = 11, height = 5)
+plot_bar(ethiopiaPhylum, fill = "Phylum",) +
+  scale_fill_brewer(palette = "Set3") +
+  theme_classic() + 
+  theme(legend.position = "right", axis.text.x =  element_text(angle = 80, vjust = 0.5)) +
+  ylab("Reltive abundance") +
+  theme(axis.title.x=element_blank())
+dev.off()
+
+# Table relative abundance Phylum
+ethiopiaP <- tax_glom(physeq_ethiopia, "Phylum")
+ethiopiaP_relabTAb <- as.data.frame(tax_table(ethiopiaP))[,c(1,2)]
+ethiopiaP_relabTAb <- ethiopiaP_relabTAb %>%
+  mutate(Rel_abun = round(100*apply(otu_table(ethiopiaP), 1, mean), digits = 3),
+         Min = round(100*apply(otu_table(ethiopiaP), 1, min), digits = 3),
+         Max = round(100*apply(otu_table(ethiopiaP), 1, max), digits = 3),
+         Standard_dev = round(100*apply(otu_table(ethiopiaP), 1, sd), digits = 3))
+row.names(ethiopiaP_relabTAb)<- ethiopiaP_relabTAb[,"Phylum"]
+ethiopiaP_relabTAb <- ethiopiaP_relabTAb[, -7] 
+write.csv(ethiopiaP_relabTAb, "Ethiopia_ps2_relabun_phylum.csv")
+#Phylum prevalence
+physeq_ethiopia_phyl <- tax_glom(physeq_eth, taxrank = "Phylum")
+
+prevdf_ph= apply(X= otu_table(physeq_ethiopia_phyl),
+               MARGIN = ifelse(taxa_are_rows(physeq_ethiopia_phyl),
+              yes =1, no =2), FUN = function(x){sum(x>0)})
+prevdf_ph = data.frame(Prevalence = prevdf_ph,
+                        TotalAbundance = taxa_sums(physeq_ethiopia_phyl),
+                        tax_table(physeq_ethiopia_phyl))
+write.csv(prevdf_ph, "Ethiopia_ps2_prev_df_phylum.csv")
+```
+Family 
+```{r}
+# Ethiopia families: Top 10 + others grouped together
+ethiopiaF <- tax_glom(physeq_ethiopia, taxrank = "Family", NArm = FALSE)
+ethiopiaF # 46 taxa (keep NA)
+# Top taxa and missing from top MI 
+TopF_ethiopia <- names(sort(taxa_sums(ethiopiaF), TRUE)[c(1:10,12,13,39)])
+ethiopiaF_top <- prune_taxa(TopF_ethiopia, ethiopiaF)
+top_otuF <- otu_table(ethiopiaF_top)
+toptaxaF <- tax_table(ethiopiaF_top)
+ethiopiaF_top = phyloseq(top_otuF, toptaxaF)
+ethiopiaF_top = merge_phyloseq(sample_data(ethiopiaF), ethiopiaF_top)
+# grouping others
+OtherF_ethiopia <- names(sort(taxa_sums(ethiopiaF), TRUE)[c(11,14:38,40:46)])
+ethiopiaF_other <- prune_taxa(OtherF_ethiopia, ethiopiaF)
+others_otu <- t(as.matrix(apply(otu_table(ethiopiaF_other), 2, sum)))
+rownames(others_otu) <- "Others Families"
+others_otu=otu_table(others_otu, taxa_are_rows = TRUE)
+other_tax <- c("Others", "Others","Others","Others","Others","Others","Others")
+other_tax <- as.matrix(other_tax)
+rownames(other_tax) <- colnames(tax_table(ethiopiaF_other))
+other_tax <- t(other_tax)
+rownames(other_tax) <- "Others Families"
+other_tax =  tax_table(other_tax)
+others_ethiopia= phyloseq(others_otu,other_tax)
+others_ethiopia = merge_phyloseq(sample_data(ethiopiaF), others_ethiopia) 
+others_ethiopia
+ethiopiaF <- merge_phyloseq(ethiopiaF_top, others_ethiopia)
+ethiopaF_melt <- psmelt(ethiopiaF)
+pdf("boxplot_top10Fam_ethiopia.pdf", width = 6)
+ggplot(ethiopaF_melt, aes(x = Family, y = Abundance)) +
+  geom_boxplot(aes(fill = Family), alpha = .3) +
+  geom_point(colour = "black", size = 1.5) +
+  geom_point(aes(color = Family), size =1) +
+  scale_color_manual(values = pall_top) +
+  scale_fill_manual(values = pall_top) +
+  theme_bw() +
+  ylim(0,1) +
+  theme(legend.position = "none", axis.text.x =  element_text(angle = 45, hjust = .9))
+dev.off()
+
+#Tab family relative abundance and prevalence
+ethiopiaF_relabTAb <- as.data.frame(tax_table(ethiopiaF))
+ethiopiaF_relabTAb <- ethiopiaF_relabTAb %>%
+  mutate(Rel_abun = round(100*apply(otu_table(ethiopiaF), 1, mean), digits = 3),
+         Min = round(100*apply(otu_table(ethiopiaF), 1, min), digits = 3),
+         Max = round(100*apply(otu_table(ethiopiaF), 1, max), digits = 3),
+         Standard_dev = round(100*apply(otu_table(ethiopiaF), 1, sd), digits = 3))
+row.names(ethiopiaF_relabTAb)<- ethiopiaF_relabTAb[,"Family"]
+ethiopiaF_relabTAb <- ethiopiaF_relabTAb[, -c(6,7)] 
+write.csv(ethiopiaF_relabTAb, "Ethiopia_ps2_relabun_topfamily.csv")
+# Prevalence
+physeq_ethiopia_fam <- tax_glom(physeq_eth, taxrank = "Family")
+prevdf_fam= apply(X= otu_table(physeq_ethiopia_fam),
+               MARGIN = ifelse(taxa_are_rows(physeq_ethiopia_fam),
+              yes =1, no =2), FUN = function(x){sum(x>0)})
+prevdf_fam = data.frame(Prevalence = prevdf_fam,
+                        TotalAbundance = taxa_sums(physeq_ethiopia_fam),
+                        tax_table(physeq_ethiopia_fam))
+write.csv(prevdf_fam, "Ethiopia_ps2_prev_family.csv")
+```
+# Rarefaction
+for alpha diversity
+```{r}
+### Species level ###
+## Keep the NAs
+physeq_filt_sp <- tax_glom(physeq_filtered, "Species", NArm = FALSE) # 1428 taxa
+set.seed(1024)
+physeq_rar_glom <- rarefy_even_depth(physeq_filt_sp, sample.size = 5000, replace = FALSE)
+# 186 OTUs were removed because they are no longerpresent in any sample after random subsampling
+physeq_rar_glom
+# 1242 taxa
+physeq_rar_glom_pd <- physeq_rar_glom
+# Faith's phylogenetic diversity at Species level
+# Calculate phylogenetic diveristy using pd() from picante package
+faith_pd_rar_glom <- pd(t(otu_table(physeq_rar_glom_pd)), phy_tree(physeq_rar_glom_pd), include.root = TRUE)
+# Adding PD and SR to sample metadata
+sample_data(physeq_rar_glom_pd) <- cbind(sample_data(physeq_rar_glom_pd), faith_pd_rar_glom)
+```
+Rarefaction curve
+```{r}
+# Comparison before and after rarefaction
+pdf(file = "RarCurve_unrarefiedSp.pdf")
+rarecurve(t(otu_table(physeq_filt_sp)), step=50, cex=0.5)
+dev.off()
+pdf(file = "RarCurve_rarefiedSp.pdf")
+rarecurve(t(otu_table(physeq_rar_glom)), step=50, cex=0.5)
+dev.off()
+```
+# Alpha diversity
+Wilcoxon test by country
+```{r}
+# Chao1 and Shannon
+results_glom = estimate_richness(physeq_rar_glom)
+d_sp = sample_data(physeq_rar_glom)
+CameroonW_sp = results_glom[d_sp[,'Country']=='Cameroon',]
+HadzaW_sp = results_glom[d_sp[,'Country']=='Tanzania',]
+JOHIW_sp = results_glom[d_sp[,'Country']=='Ethiopia',]
+PeruTransiW_sp = results_glom[d_sp[,'Country']=='Peru_transitional',]
+PeruTradiW_sp = results_glom[d_sp[,'Country']=='Peru_traditional',]
+TibetW_sp = results_glom[d_sp[,'Country']=='China',]
+USAW_sp = results_glom[d_sp[,'Country']=='USA',]
+SwedenW_sp = results_glom[d_sp[,'Country']=='Sweden',]
+MalawiW_sp = results_glom[d_sp[,'Country']=='Malawi',]
+VenezuelaW_sp = results_glom[d_sp[,'Country']=='Venezuela',]
+SalvadorW_sp = results_glom[d_sp[,'Country']=='El Salvador',]
+BangladeshW_sp = results_glom[d_sp[,'Country']=='Bangladesh',]
+
+p_val_wilcox_sp <- data.frame(Measure = c("Chao1 Species", "Shannon Species"),
+                           Cameroon = c(wilcox.test(JOHIW_sp$Chao1, CameroonW_sp$Chao1)$p.value,
+                                        wilcox.test(JOHIW_sp$Shannon, CameroonW_sp$Shannon)$p.value),
+                           Tanzania = c(wilcox.test(JOHIW_sp$Chao1, HadzaW_sp$Chao1)$p.value,
+                                        wilcox.test(JOHIW_sp$Shannon, HadzaW_sp$Shannon)$p.value),
+                            Peru_tradi = c(wilcox.test(JOHIW_sp$Chao1, PeruTradiW_sp$Chao1)$p.value,
+                                     wilcox.test(JOHIW_sp$Shannon, PeruTradiW_sp$Shannon)$p.value),
+                           Peru_transi = c(wilcox.test(JOHIW_sp$Chao1, PeruTransiW_sp$Chao1)$p.value,
+                                           wilcox.test(JOHIW_sp$Shannon, PeruTransiW_sp$Shannon)$p.value),
+                             Tibet = c(wilcox.test(JOHIW_sp$Chao1, TibetW_sp$Chao1)$p.value,
+                                        wilcox.test(JOHIW_sp$Shannon, TibetW_sp$Shannon)$p.value),
+                             USA = c(wilcox.test(JOHIW_sp$Chao1, USAW_sp$Chao1)$p.value,
+                                        wilcox.test(JOHIW_sp$Shannon, USAW_sp$Shannon)$p.value),
+                           Sweden = c(wilcox.test(JOHIW_sp$Chao1, SwedenW_sp$Chao1)$p.value,
+                                        wilcox.test(JOHIW_sp$Shannon, SwedenW_sp$Shannon)$p.value),
+                           Malawi = c(wilcox.test(JOHIW_sp$Chao1, MalawiW_sp$Chao1)$p.value,
+                                        wilcox.test(JOHIW_sp$Shannon, MalawiW_sp$Shannon)$p.value),
+                           Venezuela = c(wilcox.test(JOHIW_sp$Chao1, VenezuelaW_sp$Chao1)$p.value,
+                                        wilcox.test(JOHIW_sp$Shannon, VenezuelaW_sp$Shannon)$p.value),
+                           Salvador = c(wilcox.test(JOHIW_sp$Chao1, SalvadorW_sp$Chao1)$p.value,
+                                        wilcox.test(JOHIW_sp$Shannon, SalvadorW_sp$Shannon)$p.value),
+                           Bangladesh = c(wilcox.test(JOHIW_sp$Chao1, BangladeshW_sp$Chao1)$p.value,
+                                        wilcox.test(JOHIW_sp$Shannon, BangladeshW_sp$Shannon)$p.value)
+)
+rownames(p_val_wilcox_sp) <- p_val_wilcox_sp[,1]
+p_val_wilcox_sp <- p_val_wilcox_sp[,-1]
+
+# PD
+d_pdglom = sample_data(physeq_rar_glom_pd)
+CameroonW_pdglom = faith_pd_rar_glom[d_pdglom[,'Country']=='Cameroon',]
+HadzaW_pdglom = faith_pd_rar_glom[d_pdglom[,'Country']=='Tanzania',]
+JOHIW_pdglom = faith_pd_rar_glom[d_pdglom[,'Country']=='Ethiopia',]
+PeruTransiW_pdglom = faith_pd_rar_glom[d_pdglom[,'Country']=='Peru_transitional',]
+PeruTradiW_pdglom = faith_pd_rar_glom[d_pdglom[,'Country']=='Peru_traditional',]
+TibetW_pdglom = faith_pd_rar_glom[d_pdglom[,'Country']=='China',]
+USAW_pdglom = faith_pd_rar_glom[d_pdglom[,'Country']=='USA',]
+SwedenW_pdglom = faith_pd_rar_glom[d_pdglom[,'Country']=='Sweden',]
+MalawiW_pdglom = faith_pd_rar_glom[d_pdglom[,'Country']=='Malawi',]
+VenezuelaW_pdglom = faith_pd_rar_glom[d_pdglom[,'Country']=='Venezuela',]
+SalvadorW_pdglom = faith_pd_rar_glom[d_pdglom[,'Country']=='El Salvador',]
+BangladeshW_pdglom = faith_pd_rar_glom[d_pdglom[,'Country']=='Bangladesh',]
+
+p_val_wilcox_pdglom <- data.frame(Measure = c("PD Species", "SR Species"),
+                           Cameroon = c(wilcox.test(JOHIW_pdglom$PD, CameroonW_pdglom$PD)$p.value,
+                                        wilcox.test(JOHIW_pdglom$SR, CameroonW_pdglom$SR)$p.value),
+                           Tanzania = c(wilcox.test(JOHIW_pdglom$PD, HadzaW_pdglom$PD)$p.value,
+                                        wilcox.test(JOHIW_pdglom$SR, HadzaW_pdglom$SR)$p.value),
+                            Peru_tradi = c(wilcox.test(JOHIW_pdglom$PD, PeruTradiW_pdglom$PD)$p.value,
+                                     wilcox.test(JOHIW_pdglom$SR, PeruTradiW_pdglom$SR)$p.value),
+                           Peru_transi = c(wilcox.test(JOHIW_pdglom$PD, PeruTransiW_pdglom$PD)$p.value,
+                                     wilcox.test(JOHIW_pdglom$SR, PeruTransiW_pdglom$SR)$p.value),
+                             Tibet = c(wilcox.test(JOHIW_pdglom$PD, TibetW_pdglom$PD)$p.value,
+                                       wilcox.test(JOHIW_pdglom$SR, TibetW_pdglom$SR)$p.value),
+                             USA = c(wilcox.test(JOHIW_pdglom$PD, USAW_pdglom$PD)$p.value,
+                                     wilcox.test(JOHIW_pdglom$SR, USAW_pdglom$SR)$p.value),
+                           Sweden = c(wilcox.test(JOHIW_pdglom$PD, SwedenW_pdglom$PD)$p.value,
+                                      wilcox.test(JOHIW_pdglom$SR, SwedenW_pdglom$SR)$p.value),
+                            Malawi = c(wilcox.test(JOHIW_pdglom$PD, MalawiW_pdglom$PD)$p.value,
+                                       wilcox.test(JOHIW_pdglom$SR, MalawiW_pdglom$SR)$p.value),
+                           Venezuela = c(wilcox.test(JOHIW_pdglom$PD, VenezuelaW_pdglom$PD)$p.value,
+                                         wilcox.test(JOHIW_pdglom$SR, VenezuelaW_pdglom$SR)$p.value),
+                           Salvador = c(wilcox.test(JOHIW_pdglom$PD, SalvadorW_pdglom$PD)$p.value,
+                                        wilcox.test(JOHIW_pdglom$SR, SalvadorW_pdglom$SR)$p.value),
+                           Bangladesh = c(wilcox.test(JOHIW_pdglom$PD, BangladeshW_pdglom$PD)$p.value,
+                                          wilcox.test(JOHIW_pdglom$SR, BangladeshW_pdglom$SR)$p.value))
+
+# If correction: multiple pvalues by number of tests
+rownames(p_val_wilcox_pdglom) <- p_val_wilcox_pdglom[,1]
+p_val_wilcox_pdglom <- p_val_wilcox_pdglom[,-1]
+wilcox_test <- rbind(p_val_wilcox_sp, p_val_wilcox_pdglom)
+wilcox_testBonf <- rbind(p_val_wilcox_sp,p_val_wilcox_pdglom)
+wilcox_testBonf <- wilcox_testBonf *11 # Bonferonni correction, 10 tests in each group
+rownames(wilcox_testBonf) <- paste(rownames(wilcox_testBonf), "Bonferroni")
+wilcox_test <- rbind(wilcox_test, wilcox_testBonf)
+wilcox_test <- wilcox_test %>%
+  mutate(Tests = rownames(wilcox_test))
+write.csv(wilcox_test,"WilcoxonTest_Country_AlphaDiv.csv")
+```
+Save tables
+```{r}
+resultsalpha_glom= estimate_richness(physeq_rar_glom,measures = c("Observed", "Chao1", "Shannon", "InvSimpson"))
+DataAlpha_glom=(sample_data(resultsalpha_glom))
+DataAlpha_glom$SampleID=rownames(DataAlpha_glom)
+write.table(DataAlpha_glom,"DataAlphaDiv_Specie_Country.txt",sep="\t",row.names=FALSE)
+write.table(faith_pd_rar_glom,"DataPhyloDiv_Specie_Country.txt",sep="\t",row.names=FALSE)
+```
+Plots
+```{r}
+# Phylogenetic diversity at Species level
+pdf(file = "SP2_phylogeneticdiversitySPECIElevelCountry.pdf", width = 9, height = 8)
+plot_faith_pd_rar_glom <- ggplot(sample_data(physeq_rar_glom_pd),aes(x = Country, y = PD)) +
+  geom_boxplot(aes(fill = Lifestyle), alpha = .1) +
+  scale_fill_manual(values = pal_vanblo) +
+  geom_point(colour = "black", size = 1.5) +
+  geom_point(aes(color = Lifestyle), size =1) +
+  scale_color_manual(values= pal_vanblo)+
+  theme_bw() +
+  ylab("Phylogenetic Diversity") +
+  geom_signif(comparisons = list(c("Ethiopia", "Malawi"),c("Ethiopia","Peru_transitional"),
+                                 c("Ethiopia","Peru_traditional"),
+                                 c("Ethiopia","Sweden"),c("Ethiopia","Tanzania"),
+                                 c("Ethiopia","USA"),c("Ethiopia", "Venezuela"),
+                                 c("Ethiopia", "El Salvador"),c("Ethiopia","China"),
+                                 c("Ethiopia","Cameroon"),c("Ethiopia", "Bangladesh")),
+              map_signif_level = TRUE,
+              y_position = c(26,27,28,29,30,31,32,27,28,29,30), tip_length = 0.01) +
+  theme(axis.text=element_text(size=18), axis.title = element_text(size=18),
+        strip.text.x = element_text(size=18)) +
+  theme(legend.position = "bottom", axis.text.x =  element_text(angle = 45, hjust = .9))
+plot_faith_pd_rar_glom
+dev.off()
+```
+PD diversity with 0.25% filtering
+```{r}
+physeq_editor <- physeq_filt_sp
+#1428 taxa
+physeq_editor1 <- phyloseq::filter_taxa(physeq_editor, function(x) sum(x / sum(x)) > .0025, TRUE)
+# 10 taxa removed
+#1418 taxa
+set.seed(1024)
+physeq_editor1 <- rarefy_even_depth(physeq_editor1, sample.size = 5000, replace = FALSE)
+faith_pd_edit1 <- pd(t(otu_table(physeq_editor1)), phy_tree(physeq_editor1), include.root = TRUE)
+sample_data(physeq_editor1) <- cbind(sample_data(physeq_editor1), faith_pd_edit1)
+pdf(file = "AlphaDiv_0.25filter_world.pdf", width = 9, height = 8)
+ggplot(sample_data(physeq_editor1),aes(x = Country, y = PD)) +
+  geom_boxplot(aes(fill = Lifestyle), alpha = .1) +
+  scale_fill_manual(values = pal_vanblo) +
+  geom_point(colour = "black", size = 1.5) +
+  geom_point(aes(color = Lifestyle), size =1) +
+  scale_color_manual(values= pal_vanblo)+
+  theme_bw() +
+  ylab("Phylogenetic Diversity") +
+  geom_signif(comparisons = list(c("Ethiopia", "Malawi"),c("Ethiopia","Peru_transitional"),
+                                 c("Ethiopia","Peru_traditional"),
+                                 c("Ethiopia","Sweden"),c("Ethiopia","Tanzania"),
+                                 c("Ethiopia","USA"),c("Ethiopia", "Venezuela"),
+                                 c("Ethiopia", "El Salvador"),c("Ethiopia","China"),
+                                 c("Ethiopia","Cameroon"),c("Ethiopia", "Bangladesh")),
+              map_signif_level = TRUE,
+              y_position = c(56,57, 58,
+                             59, 60,
+                             61,  62,
+                             57, 58, 
+                             59,60), tip_length = 0.01) +
+  theme(axis.text=element_text(size=18), axis.title = element_text(size=18),
+        strip.text.x = element_text(size=18)) +
+  theme(legend.position = "bottom", axis.text.x =  element_text(angle = 45, hjust = .9))
+dev.off()
+```
+Loop on rarefaction
+```{r}
+faith_pd_bind <- as.data.frame(matrix(nrow=692))
+rownames(faith_pd_bind) <- rownames(sample_data(physeq_filt_sp))
+faith_pd_bind <- faith_pd_bind[,-1]
+for (i in 1:100) {
+  i = i+1
+  physeq_looped <- rarefy_even_depth(physeq_filt_sp, sample.size = 5000, replace = FALSE)
+  faith_pd_looped <- pd(t(otu_table(physeq_looped)), phy_tree(physeq_looped), include.root = TRUE)
+  faith_pd_bind <- cbind(faith_pd_bind, faith_pd_looped$PD)
+  print(i)
+}
+faith_pd_bind <- cbind(faith_pd_bind, rowMeans(faith_pd_bind))
+physeq_filt_sp_looped <- physeq_filt_sp
+sample_data(physeq_filt_sp_looped) <- cbind(sample_data(physeq_filt_sp_looped), faith_pd_bind$`rowMeans(faith_pd_bind)`)
+colnames(sample_data(physeq_filt_sp_looped))[12] <- "MeanPD"
+pdf(file = "DUPD_meanRarefy.pdf", width = 9, height = 8)
+ggplot(sample_data(physeq_filt_sp_looped),aes(x = Country, y = MeanPD)) +
+  geom_boxplot(aes(fill = Lifestyle), alpha = .1) +
+  scale_fill_manual(values = pal_vanblo) +
+  geom_point(colour = "black", size = 1.5) +
+  geom_point(aes(color = Lifestyle), size =1) +
+  scale_color_manual(values= pal_vanblo)+
+  theme_bw() +
+  ylab("Phylogenetic Diversity") +
+  geom_signif(comparisons = list(c("Ethiopia", "Malawi"),c("Ethiopia","Peru_transitional"),
+                                 c("Ethiopia","Peru_traditional"),
+                                 c("Ethiopia","Sweden"),c("Ethiopia","Tanzania"),
+                                 c("Ethiopia","USA"),c("Ethiopia", "Venezuela"),
+                                 c("Ethiopia", "El Salvador"),c("Ethiopia","China"),
+                                 c("Ethiopia","Cameroon"),c("Ethiopia", "Bangladesh")),
+              map_signif_level = TRUE,
+              y_position = c(26,27, 28,
+                             29, 30,
+                             31,  32,
+                             27, 28, 
+                             29,30), tip_length = 0.01) +
+  theme(axis.text=element_text(size=18), axis.title = element_text(size=18),
+        strip.text.x = element_text(size=18)) +
+  theme(legend.position = "bottom", axis.text.x =  element_text(angle = 45, hjust = .9))
+dev.off()
+```
+# Beta-diversity
+Rarefaction, removing singletons, log transform
+```{r}
+physeqSP_pruned <- tax_glom(physeq_filtered, "Species", NArm = FALSE)
+physeqSP_pruned = prune_taxa(taxa_sums(physeqSP_pruned)> 1, physeqSP_pruned)
+physeqSP_pruned = prune_samples(sample_sums(physeqSP_pruned)>= 1000, physeqSP_pruned)
+set.seed(1024)
+physeqSP_pruned_rar <- rarefy_even_depth(physeqSP_pruned, sample.size = 5000, replace = FALSE)
+physeqSP_prl <- transform_sample_counts(physeqSP_pruned_rar, function(x) log(1+x))
+```
+With 0.25% filtering and GUniFrac
+```{r}
+physeq_beta1 <- physeq_editor
+#914
+physeq_beta1 <- filter_taxa(physeq_beta1, function(x) sum(x / sum(x)) > .0025, TRUE)
+#897
+physeq_beta1 <- transform_sample_counts(physeq_beta1, function(x) log(1+x))
+MIdistSP.guf.edit <- GUniFrac(t(otu_table(physeq_beta1)), phy_tree(physeq_beta1),alpha=c(0,0.5,1))$unifracs
+MIdistSP.guf.edit <-MIdistSP.guf.edit[,,"d_0.5"] #GUniFracwithalpha0.5
+MIdistSP.guf.edit <- as.dist(MIdistSP.guf.edit)
+testMI_guf_sp_edit <- ordinate(physeq_beta1, "PCoA", distance = MIdistSP.guf.edit)
+pdf("PCoA_GUniFrac_sp_filter0.25_world.pdf")
+plot_ordination(physeq_beta1, testMI_guf_sp_edit, type = "samples", color = "Lifestyle", shape = "Lifestyle") +
+  stat_ellipse(mapping= aes(fill = Lifestyle, color = Lifestyle),geom = "polygon", alpha = 0.2, show.legend = FALSE) +
+  scale_shape_manual(values=c(0:12)) +
+  scale_color_manual(values = pal_ellipse) +
+  scale_fill_manual(values = pal_ellipse) +
+  theme_bw() +
+  ggtitle("PCoA (GUniFrac distance)")
+dev.off()
+```
+Distance and ordination
+```{r}
+# Bray-Curtis
+distSP.bc <- phyloseq::distance(physeqSP_prl, method = "bray")
+test_PCoAbray <- ordinate(physeqSP_prl, "PCoA", distance = distSP.bc)
+pdf("PCoA (Bray-Curtis distance) on full dataset_Species.pdf")
+plot_ordination(physeqSP_prl, test_PCoAbray, type = "samples", color = "Country", shape = "Lifestyle") + 
+  scale_shape_manual(values=c(15,16,17,4)) +
+  scale_color_manual(values = pal_all) +
+  geom_point(size =3) +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  ggtitle("PCoA (Bray-Curtis distance) on full dataset at species level")
+dev.off()
+
+# Jaccard
+distSP.jac <- phyloseq::distance(physeqSP_prl, method = "jaccard")
+test_PCoAjac <- ordinate(physeqSP_prl, "PCoA", distance = distSP.jac)
+pdf("PCoA (Jaccard distance) on full dataset_Species.pdf")
+plot_ordination(physeqSP_prl, test_PCoAjac, type = "samples", color = "Country", shape = "Lifestyle") + 
+  scale_shape_manual(values=c(15,16,17,4)) +
+  scale_color_manual(values = pal_all) +
+  geom_point(size =3) +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  ggtitle("PCoA (Jaccard distance) on full dataset at species level")
+dev.off()
+
+# WeightedUniFrac
+distSP.wuf <- phyloseq::distance(physeqSP_prl, method = "wunifrac")
+test_PCoAwuf <- ordinate(physeqSP_prl, "PCoA", distance = distSP.wuf)
+pdf("PCoA (WUnifrac distance) on full dataset_Species.pdf", width = 10, height = 10)
+plot_ordination(physeqSP_prl, test_PCoAwuf, type = "samples", color = "Country", shape = "Lifestyle") + 
+  scale_shape_manual(values=c(15,16,17,4)) +
+  scale_color_manual(values = pal_all) +
+  geom_point(size =3) +
+  theme_bw() +
+  theme(legend.position = "right") +
+  ggtitle("PCoA (WUnifrac distance) on full dataset at species level")
+dev.off()
+```
+PCoA with ellipses 
+```{r}
+pdf("PCoA_BC_ellipses.pdf")  
+plot_ordination(physeqSP_prl, test_PCoAbray, type = "samples", color = "Lifestyle", shape = "Lifestyle") + 
+  stat_ellipse(mapping= aes(fill = Lifestyle, color = Lifestyle),geom = "polygon", alpha = 0.2, show.legend = FALSE) +
+  scale_shape_manual(values=c(15,16,17,4)) +
+  scale_color_brewer(palette = "Paired") +
+  scale_fill_brewer(palette = "Paired") +
+  theme_bw() +
+  ggtitle("PCoA (Bray-Curtis distance)")
+dev.off()
+
+pdf("PCoA_WUF_ellipses.pdf")  
+plot_ordination(physeqSP_prl, test_PCoAwuf, type = "samples", color = "Lifestyle", shape = "Lifestyle") + 
+  stat_ellipse(mapping= aes(fill = Lifestyle, color = Lifestyle),geom = "polygon", alpha = 0.2, show.legend = FALSE) +
+  scale_shape_manual(values=c(0:12)) +
+  scale_color_manual(values = pal_ellipse) +
+  scale_fill_manual(values = pal_ellipse) +
+  theme_bw() +
+  ggtitle("PCoA (Weighted-Unifrac distance)")
+dev.off()
+```
+GUniFrac
+```{r}
+library(GUniFrac)
+MIdistSP.guf <- GUniFrac(t(otu_table(physeqSP_prl)), phy_tree(physeqSP_prl),alpha=c(0,0.5,1))$unifracs
+MIdistSP.guf_1 <- MIdistSP.guf
+MIdistSP.guf <- MIdistSP.guf_1
+MIdistSP.guf <-MIdistSP.guf[,,"d_0.5"] #GUniFracwithalpha0.5
+MIdistSP.guf <- as.dist(MIdistSP.guf)
+test_PCogwuf <- ordinate(physeqSP_prl, "PCoA", distance = MIdistSP.guf)
+pdf("PCoA_GUniFrac_sp_world.pdf")
+plot_ordination(physeqSP_prl, test_PCogwuf, type = "samples", color = "Lifestyle", shape = "Lifestyle") + 
+  stat_ellipse(mapping= aes(fill = Lifestyle, color = Lifestyle),geom = "polygon", alpha = 0.2, show.legend = FALSE) +
+  scale_shape_manual(values=c(0:12)) +
+  scale_color_manual(values = pal_ellipse) +
+  scale_fill_manual(values = pal_ellipse) +
+  theme_bw() +
+  ggtitle("PCoA (Generalized-Unifrac distance)")
+dev.off()
+```
+Adonis test for WeightedUnifrac at lifestyle 
+```{r}
+#Distances within a group are smaller than distance between the groups?
+# vegan package, function: adonis
+# Need metadata
+meta_pcoa = as.matrix(sample_data(physeqSP_prl))
+meta_pcoa <- as.data.frame(meta_pcoa)
+# distance matrix
+distance_pcoa <- distSP.wuf
+# Adonis test
+permanova_all <- vegan::adonis(distance_pcoa ~ Lifestyle, data = meta_pcoa)
+# structure of the anova table
+permanova_all$aov.tab$`Pr(>F)`[1]
+
+pairwise_p <- numeric()
+# Pairwise comparison
+eth_indu_ado <- meta_pcoa %>%
+  filter(Lifestyle == "Ethiopian" | Lifestyle == "Industrial")
+eth_indu_dist <- dist_subset(distance_pcoa, eth_indu_ado$fastqID)
+eth_indu_tado <- adonis(eth_indu_dist ~ Lifestyle, 
+                       data = eth_indu_ado, 
+                       permutations = 1000)
+pairwise_p["Eth_Indu"] <- eth_indu_tado$aov.tab$`Pr(>F)`[1]
+
+
+eth_tradi_ado <- meta_pcoa %>%
+  filter(Lifestyle == "Ethiopian" | Lifestyle == "Traditional")
+eth_tradi_dist <- dist_subset(distance_pcoa, eth_tradi_ado$fastqID)
+eth_tradi_tado <- adonis(eth_tradi_dist ~ Lifestyle, 
+                       data = eth_tradi_ado, 
+                       permutations = 1000)
+pairwise_p["Eth_tradi"] <- eth_tradi_tado$aov.tab$`Pr(>F)`[1]
+
+eth_transi_ado <- meta_pcoa %>%
+  filter(Lifestyle == "Ethiopian" | Lifestyle == "Transitional")
+eth_transi_dist <- dist_subset(distance_pcoa, eth_transi_ado$fastqID)
+eth_transi_tado <- adonis(eth_transi_dist ~ Lifestyle, 
+                       data = eth_transi_ado, 
+                       permutations = 1000)
+pairwise_p["Eth_transi"] <- eth_transi_tado$aov.tab$`Pr(>F)`[1]
+
+
+tradi_indu_ado <- meta_pcoa %>%
+  filter(Lifestyle == "Industrial" | Lifestyle == "Traditional")
+tradi_indu_dist <- dist_subset(distance_pcoa, tradi_indu_ado$fastqID)
+tradi_indu_tado <- adonis(tradi_indu_dist ~ Lifestyle, 
+                       data = tradi_indu_ado, 
+                       permutations = 1000)
+pairwise_p["tradi_Indu"] <- tradi_indu_tado$aov.tab$`Pr(>F)`[1]
+
+transi_indu_ado <- meta_pcoa %>%
+  filter(Lifestyle == "Industrial" | Lifestyle == "Transitional")
+transi_indu_dist <- dist_subset(distance_pcoa, transi_indu_ado$fastqID)
+transi_indu_tado <- adonis(transi_indu_dist ~ Lifestyle, 
+                       data = transi_indu_ado, 
+                       permutations = 1000)
+pairwise_p["transi_Indu"] <- transi_indu_tado$aov.tab$`Pr(>F)`[1]
+
+
+transi_tradi_ado <- meta_pcoa %>%
+  filter(Lifestyle == "Traditional" | Lifestyle == "Transitional")
+transi_tradi_dist <- dist_subset(distance_pcoa, transi_tradi_ado$fastqID)
+transi_tradi_tado <- adonis(transi_tradi_dist ~ Lifestyle, 
+                       data = transi_tradi_ado, 
+                       permutations = 1000)
+pairwise_p["transi_tradi"] <- transi_tradi_tado$aov.tab$`Pr(>F)`[1]
+
+# Adjust p values: use p.adjust in base R
+pairwise_padj <- p.adjust(pairwise_p, method = "BH")
+write.csv(pairwise_padj,"WUF_ADONIS_p.adjust.csv")
+```
+Plot on different axes
+Bray-Curtis
+```{r}
+plot_ordination(physeqSP_prl, test_PCoAbray, type = "samples", color = "Country", shape = "Lifestyle") + 
+  scale_shape_manual(values=c(15,16,17,4)) +
+  scale_color_manual(values = pal_all) +
+  geom_point(size =3) +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  ggtitle("PCoA (Bray-Curtis distance) on full dataset at species level")
+
+plot_ordination(physeqSP_prl, test_PCoAbray, axes = c(3,2), type = "samples", color = "Country", shape = "Lifestyle") + 
+  scale_shape_manual(values=c(15,16,17,4)) +
+  scale_color_manual(values = pal_all) +
+  geom_point(size =3) +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  ggtitle("PCoA (Bray-Curtis distance) on full dataset at species level")
+
+plot_ordination(physeqSP_prl, test_PCoAbray, axes = c(1,3), type = "samples", color = "Country", shape = "Lifestyle") + 
+  scale_shape_manual(values=c(15,16,17,4)) +
+  scale_color_manual(values = pal_all) +
+  geom_point(size =3) +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  ggtitle("PCoA (Bray-Curtis distance) on full dataset at species level")
+```
+Weighted UniFrac
+```{r}
+plot_ordination(physeqSP_prl, test_PCoAwuf,axes = c(1,2), type = "samples", color = "Country", shape = "Lifestyle") + 
+  scale_shape_manual(values=c(15,16,17,4)) +
+  scale_color_manual(values = pal_all) +
+  geom_point(size =3) +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  ggtitle("PCoA (WUnifrac distance) on full dataset at species level")
+
+plot_ordination(physeqSP_prl, test_PCoAwuf,axes = c(3,2), type = "samples", color = "Country", shape = "Lifestyle") + 
+  scale_shape_manual(values=c(15,16,17,4)) +
+  scale_color_manual(values = pal_all) +
+  geom_point(size =3) +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  ggtitle("PCoA (WUnifrac distance) on full dataset at species level")
+
+plot_ordination(physeqSP_prl, test_PCoAwuf,axes = c(1,3), type = "samples", color = "Country", shape = "Lifestyle") + 
+  scale_shape_manual(values=c(15,16,17,4)) +
+  scale_color_manual(values = pal_all) +
+  geom_point(size =3) +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  ggtitle("PCoA (WUnifrac distance) on full dataset at species level")
+```
+# Clustering
+Heatmap
+```{r}
+## Species agglomeration 
+physeq_hm <- tax_glom(physeq_ra, "Species", NArm=FALSE)
+OTUhm = as.data.frame(otu_table(physeq_hm))
+TAXhm = as.data.frame(tax_table(physeq_hm))
+METAhm = as.data.frame(sample_data(physeq_hm))
+reads <-cbind(TAXhm, OTUhm)
+reads[which(is.na(reads[,6])==TRUE),6] <- str_c("Unassigned", '_', reads[which(is.na(reads[,6])==TRUE),5])
+reads[which(is.na(reads[,7])==TRUE),7] <- str_c("Unassigned", '_', reads[which(is.na(reads[,7])==TRUE),6])
+# Keep only column with the desired taxonomic rank
+reads <-reads[, -(1:5)]
+reads$Name <- str_c(reads$Genus, '_', reads$Species)
+reads[, 695]<-as.character(reads[, 695])
+reads[, 695]<-make.unique(reads[, 695]) # Now X unique species
+rownames(reads) <- reads[,695] #assign rownames as species/family/phylum names
+reads <- reads[,-c(1,2,695)] # remove column with names
+reads <- t(reads) # transpose as we want columns with taxa names and rows with samples names 
+# Rows are samples because distance function do the distance on the rows
+# Now table with column being unique taxa, rows being each sample, each cases contains abundance
+# copy into a new table
+reads_hm <- reads
+## ready for:
+# hierarchical clustering using Ward D linkage 
+### Method:use the squared sum deviation of the group against the center of the group resulting of the fusion of the two groups
+## distance: default is euclidiean, other possibility:  "jensen-shannon" 
+## using vegdist(reads, method="jensen-shannon", useShrinkage = TRUE)
+hc=hclust(dist(reads_hm),method="ward.D")
+plot(hc, hang=-1)
+# hang is the fraction of the plot height by which labels should hang below the rest of the plot
+# Save as dendogram
+dend=as.dendrogram(hc)
+# create a numeric vector 
+CH <- vector("numeric", 9L)
+# Calinski-Harabasz index: ratio between variance between group and variance inside each group
+# Goal: high inter group and low intra group
+# Highest index is the one to select
+for (k in 2:10){
+      clrs=cutree(hc,k=k)
+      CH[k-1] = intCriteria(as.matrix(reads_hm),clrs,"all")$calinski_harabasz
+    }
+# Plot the index for each value of k
+ggplot() +
+        geom_point(aes(x=c(2:10),y=CH)) +
+        geom_line(aes(x=c(2:10),y=CH)) +
+        xlab("Number of clusters (k)") +
+        ylab("Calinski-Harabasz index") +
+        theme_minimal()
+# 2 clusters
+# The tree can be cut in the number of clusters
+nClrs=2
+#k is the number of clusters
+# return cluster number in which each samples belong to
+clrs=cutree(hc,k=nClrs)
+clrs <- as.data.frame(clrs)
+# attaching the clusters info to the table
+#Renaming clrs info as Cluster X instead of numbers
+clrs <- data.frame(Cluster = ifelse(test = clrs == 1, yes = "Cluster 1",no = "Cluster 2"))
+# Adding clusters to metadata dataframe
+METAhm <- cbind(METAhm, clrs)
+colnames(METAhm)[12] <- "Cluster"
+# Now we have the optimal number of cluster and each sample have the cluster to which it belongs to
+sample_data(physeq_hm) <- cbind(sample_data(physeq_hm), clrs)
+
+#Test significantly different abundance of taxa between two clusters
+physeq_hm_comp <- psmelt(physeq_hm)
+physeq_hm_comp[which(is.na(physeq_hm_comp[,21])==TRUE),21] <- str_c("Unassigned",
+                                                                '_', physeq_hm_comp[which(is.na(physeq_hm_comp[,21])==TRUE),20])
+physeq_hm_comp[which(is.na(physeq_hm_comp[,22])==TRUE),22] <- str_c("Unassigned",
+                                                                '_', physeq_hm_comp[which(is.na(physeq_hm_comp[,22])==TRUE),21])
+physeq_hm_comp$Name <- str_c(physeq_hm_comp$Genus, '_', physeq_hm_comp$Species)
+wil_test_hm <- physeq_hm_comp %>%
+  group_by(Name) %>%
+  mutate(pval = wilcox.test(Abundance ~ clrs, paired = F)$p.value)
+wil_test_hm['p.value_bonf'] <- wil_test_hm$pval * length(unique(wil_test_hm$Name))
+hm_sig <- unique(wil_test_hm[which(wil_test_hm$p.value_bonf < 0.05), "Name"])
+hm_sig # 94 taxa significantly different between the two clusters
+clrs_wiltest <- wil_test_hm %>% 
+  dplyr::filter(p.value_bonf < 0.05) %>%
+  group_by(Name, pval, p.value_bonf) %>%
+  summarise(Comparison = "Cluster 1-2")
+write.csv(clrs_wiltest, "Cluster_WilcoxonBonfSignSpecies.csv")
+
+# Selecting based on clusters
+#relative abundance for each dataset
+hm_cl1 <- subset_samples(physeq_hm, clrs=="Cluster 1")
+hm_cl2 <- subset_samples(physeq_hm, clrs=="Cluster 2")
+# Select x most abundant 
+Top_cl1 <- as.data.frame(names(sort(taxa_sums(hm_cl1), TRUE)[1:20]))
+Top_cl2 <- as.data.frame(names(sort(taxa_sums(hm_cl2), TRUE)[1:20]))
+physeq_hmTop <- physeq_hm
+# OTU table
+OTUhmTop = as.data.frame(otu_table(physeq_hmTop))
+# Tax table
+TAXhmTop = as.data.frame(tax_table(physeq_hmTop))
+## Matrix for heatmap
+readsTop <-cbind(TAXhmTop, OTUhmTop)
+colnames(readsTop)
+readsTop[which(is.na(readsTop[,6])==TRUE),6] <- str_c("Unassigned", '_', readsTop[which(is.na(readsTop[,6])==TRUE),5])
+readsTop[which(is.na(readsTop[,7])==TRUE),7] <- str_c("Unassigned", '_', readsTop[which(is.na(readsTop[,7])==TRUE),6])
+readsTop <-readsTop[, -(1:5)]
+readsTop$Name <- str_c(readsTop$Genus, '_', readsTop$Species)
+# Selecting significant ones
+readsTop <- readsTop[which(readsTop$Name %in% hm_sig$Name),]
+# Selecting top
+readsTop <- readsTop[which(rownames(readsTop) %in% Top_cl2$`names(sort(taxa_sums(hm_cl2), TRUE)[1:20])` |
+                   rownames(readsTop) %in% Top_cl1$`names(sort(taxa_sums(hm_cl1), TRUE)[1:20])`),]
+readsTop[, 695]<-as.character(readsTop[, 695])
+length(unique(readsTop[,695])) # unique species
+readsTop[, 695]<-make.unique(readsTop[, 695]) # Now X unique species
+rownames(readsTop) <- readsTop[,695] #assign rownames as species/family/phylum names
+readsTop <- readsTop[,-c(1,2,695)]
+readsTop <- as.matrix(readsTop)
+# Heatmap annotations
+column_hm = HeatmapAnnotation(ls = METAhm[,9], clst = METAhm[,12],
+                              col = list(ls=c("Traditional" = pal_vanblo[3],
+                                              "Ethiopian" = pal_vanblo[1],
+                                              "Transitional" = pal_vanblo[4],
+                                              "Industrial" = pal_vanblo[2]),
+                                         clst = c("Cluster 1" = pal_all[3], 
+                                                  "Cluster 2" =pal_all[9])),
+                              annotation_label = c("Lifestyle","Clusters"))
+
+library(circlize)
+col_fun <- colorRamp2(c(0,0.5,1), c("white", "red", "black"))
+col_fun(seq(-3,3))
+
+pdf("heatmap_top10SpeciesRED.pdf", width = 20, height = 7)
+Heatmap(readsTop, name = "Relative abundance",
+        col = col_fun,
+        row_title = "Taxa", cluster_rows = TRUE, 
+        top_annotation = column_hm,cluster_columns = function(m) as.dendrogram(hc), 
+        show_column_names = FALSE, row_names_side = "left", row_names_max_width = max_text_width(rownames(treads), 
+        gp = gpar(fontsize = 12)))
+dev.off()
+```
+Chi-squared df
+```{r}
+physeq_chi <- physeq_hm
+names(sample_data(physeq_chi))[12] <- "Cluster"
+# Country
+sample_data(physeq_chi)$nSample[sample_data(physeq_chi)$Country == "Cameroon"] <- length(which(sample_data(physeq_chi)$Country == "Cameroon")==TRUE)
+sample_data(physeq_chi)$nSample[sample_data(physeq_chi)$Country == "Tanzania"] <- length(which(sample_data(physeq_chi)$Country == "Tanzania")==TRUE)
+sample_data(physeq_chi)$nSample[sample_data(physeq_chi)$Country == "Ethiopia"] <- length(which(sample_data(physeq_chi)$Country == "Ethiopia")==TRUE)
+sample_data(physeq_chi)$nSample[sample_data(physeq_chi)$Country == "China"] <- length(which(sample_data(physeq_chi)$Country == "China")==TRUE)
+sample_data(physeq_chi)$nSample[sample_data(physeq_chi)$Country == "Peru"] <- length(which(sample_data(physeq_chi)$Country == "Peru")==TRUE)
+sample_data(physeq_chi)$nSample[sample_data(physeq_chi)$Country == "Sweden"] <- length(which(sample_data(physeq_chi)$Country == "Sweden")==TRUE)
+sample_data(physeq_chi)$nSample[sample_data(physeq_chi)$Country == "USA"] <- length(which(sample_data(physeq_chi)$Country == "USA")==TRUE)
+sample_data(physeq_chi)$nSample[sample_data(physeq_chi)$Country == "Malawi"] <- length(which(sample_data(physeq_chi)$Country == "Malawi")==TRUE)
+sample_data(physeq_chi)$nSample[sample_data(physeq_chi)$Country == "Venezuela"] <- length(which(sample_data(physeq_chi)$Country == "Venezuela")==TRUE)
+sample_data(physeq_chi)$nSample[sample_data(physeq_chi)$Country == "El Salvador"] <- length(which(sample_data(physeq_chi)$Country == "El Salvador")==TRUE)
+sample_data(physeq_chi)$nSample[sample_data(physeq_chi)$Country == "Bangladesh"] <- length(which(sample_data(physeq_chi)$Country == "Bangladesh")==TRUE)
+# Lifestyle
+sample_data(physeq_chi)$nLifestyle[sample_data(physeq_chi)$Lifestyle == "Industrial"] <- length(which(sample_data(physeq_chi)$Lifestyle == "Industrial")==TRUE)
+sample_data(physeq_chi)$nLifestyle[sample_data(physeq_chi)$Lifestyle == "Traditional"] <- length(which(sample_data(physeq_chi)$Lifestyle == "Traditional")==TRUE)
+sample_data(physeq_chi)$nLifestyle[sample_data(physeq_chi)$Lifestyle == "Ethiopian"] <- length(which(sample_data(physeq_chi)$Lifestyle == "Ethiopian")==TRUE)
+sample_data(physeq_chi)$nLifestyle[sample_data(physeq_chi)$Lifestyle == "Transitional"] <- length(which(sample_data(physeq_chi)$Lifestyle == "Transitional")==TRUE)
+# Metadata table
+md_hm = as(sample_data(physeq_chi), "matrix")
+md_hm <- as.data.frame(md_hm)
+chi_cam <- md_hm %>%
+  dplyr::filter(Country == "Cameroon")
+chi_tan <- md_hm %>%
+  dplyr::filter(Country=="Tanzania")
+chi_eth <- md_hm %>%
+  dplyr::filter(Country=="Ethiopia")
+chi_tib <- md_hm %>%
+  dplyr::filter(Country=="China")
+chi_per <- md_hm %>%
+  dplyr::filter(Country=="Peru")
+chi_swe <- md_hm %>%
+  dplyr::filter(Country=="Sweden")
+chi_usa <- md_hm %>%
+  dplyr::filter(Country=="USA")
+chi_mal <- md_hm %>%
+  dplyr::filter(Country=="Malawi")
+chi_ven <- md_hm %>%
+  dplyr::filter(Country=="Venezuela")
+chi_sal <- md_hm %>%
+  dplyr::filter(Country=="El Salvador")
+chi_ban <- md_hm %>%
+  dplyr::filter(Country=="Bangladesh")
+
+chi_cam$nSample <- as.numeric(chi_cam$nSample)
+chi_tan$nSample <- as.numeric(chi_tan$nSample)
+chi_eth$nSample <- as.numeric(chi_eth$nSample)
+chi_per$nSample <- as.numeric(chi_per$nSample)
+chi_tib$nSample <- as.numeric(chi_tib$nSample)
+chi_swe$nSample <- as.numeric(chi_swe$nSample)
+chi_usa$nSample <- as.numeric(chi_usa$nSample)
+chi_mal$nSample <- as.numeric(chi_mal$nSample)
+chi_ven$nSample <- as.numeric(chi_ven$nSample)
+chi_sal$nSample <- as.numeric(chi_sal$nSample)
+chi_ban$nSample <- as.numeric(chi_ban$nSample)
+#Percentage
+chi_cam <- chi_cam %>%
+  mutate(relCount = 100/nSample)
+chi_tan <- chi_tan %>%
+  mutate(relCount = 100/nSample)
+chi_eth <- chi_eth %>%
+  mutate(relCount = 100/nSample)
+chi_tib <- chi_tib %>%
+  mutate(relCount = 100/nSample)
+chi_per <- chi_per %>%
+  mutate(relCount = 100/nSample)
+chi_swe <- chi_swe %>%
+  mutate(relCount = 100/nSample)
+chi_usa <- chi_usa %>%
+  mutate(relCount = 100/nSample)
+chi_mal <- chi_mal %>%
+  mutate(relCount = 100/nSample)
+chi_ven <- chi_ven %>%
+  mutate(relCount = 100/nSample)
+chi_sal <- chi_sal %>%
+  mutate(relCount = 100/nSample)
+chi_ban <- chi_ban %>%
+  mutate(relCount = 100/nSample)
+
+md_hm <- rbind(chi_cam, chi_tan, chi_eth, chi_per, chi_tib, chi_swe,
+               chi_usa, chi_mal, chi_ven, chi_sal, chi_ban)
+chi_cam <- chi_cam %>% 
+  group_by(Country, Lifestyle, Cluster) %>% 
+  summarise(Clust_per = sum(relCount))
+chi_tan <- chi_tan %>% 
+  group_by(Country, Lifestyle, Cluster) %>% 
+  summarise(Clust_per = sum(relCount))
+chi_eth <- chi_eth %>% 
+  group_by(Country, Lifestyle, Cluster) %>% 
+  summarise(Clust_per = sum(relCount))
+chi_tib <- chi_tib %>% 
+  group_by(Country, Lifestyle, Cluster) %>% 
+  summarise(Clust_per = sum(relCount))
+chi_per <- chi_per %>% 
+  group_by(Country, Lifestyle, Cluster) %>% 
+  summarise(Clust_per = sum(relCount))
+chi_usa <- chi_usa %>% 
+  group_by(Country, Lifestyle, Cluster) %>% 
+  summarise(Clust_per = sum(relCount))
+chi_swe <- chi_swe %>% 
+  group_by(Country, Lifestyle, Cluster) %>% 
+  summarise(Clust_per = sum(relCount))
+chi_mal <- chi_mal %>% 
+  group_by(Country, Lifestyle, Cluster) %>% 
+  summarise(Clust_per = sum(relCount))
+chi_ven <- chi_ven %>% 
+  group_by(Country, Lifestyle, Cluster) %>% 
+  summarise(Clust_per = sum(relCount))
+chi_sal <- chi_sal %>% 
+  group_by(Country, Lifestyle, Cluster) %>% 
+  summarise(Clust_per = sum(relCount))
+chi_ban <- chi_ban %>% 
+  group_by(Country, Lifestyle, Cluster) %>% 
+  summarise(Clust_per = sum(relCount))
+
+chi_per_c <- chi_per %>%
+  group_by(Country, Cluster) %>%
+  summarise(Clust_per = sum(Clust_per))
+
+md_chi_country <- rbind(chi_cam, chi_tan, chi_eth, chi_per_c, chi_tib,
+                        chi_swe, chi_usa, chi_mal, chi_ven, chi_sal, chi_ban)
+```
+Chi-squared test
+```{r}
+# Countries
+chi.sq_countries = table(md_hm$Country, md_hm$Cluster)
+chi.sq_countries
+chisq_cou <- matrix(ncol = 11, nrow = 11)
+colnames(chisq_cou) <- rownames(chi.sq_countries)
+rownames(chisq_cou) <- rownames(chi.sq_countries)
+
+for (i in 1:11){
+  for (j in 1:11) {
+     chisq_cou[i,j] <- chisq.test(chi.sq_countries[c(i,j),])$p.value
+      j= j+1
+     }
+  
+  i = i+1
+}
+# Save repartition and tests
+write.csv(chi.sq_countries, "Country_clrs.csv")
+write.csv(chisq_cou, "Chitest_country.csv")
+
+#Lifestyle
+chi.sq_lifestyle = table(md_hm$Lifestyle, md_hm$Cluster)
+chi.sq_lifestyle
+chisq_lif <- matrix(ncol = 4, nrow = 4)
+colnames(chisq_lif) <- rownames(chi.sq_lifestyle) #rownames(chi.sq_countries)
+rownames(chisq_lif) <- rownames(chi.sq_lifestyle)
+
+for (i in 1:4){
+  for (j in 1:4) {
+     chisq_lif[i,j] <- chisq.test(chi.sq_lifestyle[c(i,j),])$p.value
+  j = j+1
+  }
+  i = i+1
+}
+
+# Save repartition and tests
+write.csv(chi.sq_lifestyle, "Lifestyle_clrs.csv")
+write.csv(chisq_lif, "Chitest_lifestyle.csv")
+```
+# VANISH/BloSSUM families
+```{r}
+DU_ra_fam <- tax_glom(physeq_ra, taxrank = "Family")
+Poster_ra_sub <- subset_taxa(DU_ra_fam,Family == "Akkermansiaceae"| Family == "Bacteroidaceae"|
+                                Family =="Prevotellaceae"| Family == "Succinivibrionaceae"|
+                               Family == "Streptococcaceae" | Family == "Erysipelatoclostridiaceae" |
+                           Family == "Bifidobacteriaceae" | Family == "Lactobacillaceae"  )
+Poster_ra_sub_log <- transform_sample_counts(Poster_ra_sub, function(x=0) x+0.000001)
+Poster_ra_sub_log <- transform_sample_counts(Poster_ra_sub_log, function(x) log(x))
+Poster_ra_sub_melt_log <- psmelt(Poster_ra_sub_log)
+pdf("Fam_select_lifestyle_log.pdf", width = 18, height = 8)
+ggplot(Poster_ra_sub_melt_log,  aes(x = Lifestyle, y = Abundance)) +
+  geom_boxplot(aes(fill = Lifestyle), alpha = .3) +
+  geom_point(colour = "black", size = 1.5) +
+  geom_point(aes(color = Lifestyle),  size =1) +
+  scale_color_manual(values= pal_vanblo)+
+  scale_fill_manual(values = pal_vanblo) +
+  facet_wrap(Family~., nrow = 2) +
+  geom_signif(comparisons = list(c("Ethiopian", "Industrial"),c("Ethiopian", "Traditional"),
+                                 c("Ethiopian", "Transitional"), c("Industrial", "Traditional"),
+                                 c("Transitional", "Industrial"),c("Traditional", "Transitional")),
+              map_signif_level = TRUE,
+              y_position = c(-0.5,0.5,1, -1, 1, 0), tip_length = 0.01) +
+  theme_bw() +
+  theme(legend.position = "right", axis.text.x =  element_text(angle = 45, hjust = .9))
+dev.off()
+```
+Wilcoxon test by lifestyle
+```{r}
+# Taxa agglomerated at Family level: Akkermansiceaa, Bacteroidaceae, Prevotellaceae, Succininvibironaceae, Streptococcaceae, Erysipelatoclostridiaceae, Bifidobacteriaceae, Lactobacillaceae
+# 4 lifestyes: Ethiopian, Industrial, Traditional, Transitional
+# Pairewise comparison with Wilcoxon rank test with Bonferroni correction for multiple comparisons
+ethindu_vanblo <-  Poster_ra_sub_melt %>%
+  dplyr::filter(Lifestyle=="Ethiopian" | Lifestyle =="Industrial")
+wt_ethindu_vanblo <- ethindu_vanblo %>%
+  group_by(Family) %>%
+  mutate(pval = wilcox.test(Abundance ~ Lifestyle, paired = F)$p.value)
+wt_ethindu_vanblo['p.value_bonf'] <- wt_ethindu_vanblo$pval * length(unique(wt_ethindu_vanblo$Family))
+unique(wt_ethindu_vanblo[which(wt_ethindu_vanblo$p.value_bonf < 0.05), "Family"])
+
+ethtradi_vanblo <-  Poster_ra_sub_melt %>%
+  dplyr::filter(Lifestyle=="Ethiopian" | Lifestyle =="Traditional")
+wt_ethtradi_vanblo <- ethtradi_vanblo %>%
+  group_by(Family) %>%
+  mutate(pval = wilcox.test(Abundance ~ Lifestyle, paired = F)$p.value)
+wt_ethtradi_vanblo['p.value_bonf'] <- wt_ethtradi_vanblo$pval * length(unique(wt_ethtradi_vanblo$Family))
+unique(wt_ethtradi_vanblo[which(wt_ethtradi_vanblo$p.value_bonf < 0.05), "Family"])
+
+ethtransi_vanblo <-  Poster_ra_sub_melt %>%
+  dplyr::filter(Lifestyle=="Ethiopian" | Lifestyle =="Transitional")
+wt_ethtransi_vanblo <- ethtransi_vanblo %>%
+  group_by(Family) %>%
+  mutate(pval = wilcox.test(Abundance ~ Lifestyle, paired = F)$p.value)
+wt_ethtransi_vanblo['p.value_bonf'] <- wt_ethtransi_vanblo$pval * length(unique(wt_ethtransi_vanblo$Family))
+unique(wt_ethtransi_vanblo[which(wt_ethtransi_vanblo$p.value_bonf < 0.05), "Family"])
+
+tradiindu_vanblo <-  Poster_ra_sub_melt %>%
+  dplyr::filter(Lifestyle=="Traditional" | Lifestyle =="Industrial")
+wt_tradiindu_vanblo <- tradiindu_vanblo %>%
+  group_by(Family) %>%
+  mutate(pval = wilcox.test(Abundance ~ Lifestyle, paired = F)$p.value)
+wt_tradiindu_vanblo['p.value_bonf'] <- wt_tradiindu_vanblo$pval * length(unique(wt_tradiindu_vanblo$Family))
+unique(wt_tradiindu_vanblo[which(wt_tradiindu_vanblo$p.value_bonf < 0.05), "Family"])
+
+transitradi_vanblo <-  Poster_ra_sub_melt %>%
+  dplyr::filter(Lifestyle=="Transitional" | Lifestyle =="Traditional")
+wt_transitradi_vanblo <- transitradi_vanblo %>%
+  group_by(Family) %>%
+  mutate(pval = wilcox.test(Abundance ~ Lifestyle, paired = F)$p.value)
+wt_transitradi_vanblo['p.value_bonf'] <- wt_transitradi_vanblo$pval * length(unique(wt_transitradi_vanblo$Family))
+unique(wt_transitradi_vanblo[which(wt_transitradi_vanblo$p.value_bonf < 0.05), "Family"])
+
+indutransi_vanblo <-  Poster_ra_sub_melt %>%
+  dplyr::filter(Lifestyle=="Industrial" | Lifestyle =="Transitional")
+wt_indutransi_vanblo <- indutransi_vanblo %>%
+  group_by(Family) %>%
+  mutate(pval = wilcox.test(Abundance ~ Lifestyle, paired = F)$p.value)
+wt_indutransi_vanblo['p.value_bonf'] <- wt_indutransi_vanblo$pval * length(unique(wt_indutransi_vanblo$Family))
+unique(wt_indutransi_vanblo[which(wt_indutransi_vanblo$p.value_bonf < 0.05), "Family"])
+
+# Saving table with p-values
+vanblo_pval <- wt_ethindu_vanblo %>%
+  group_by(Family, pval, p.value_bonf) %>%
+  summarise(Comparison = "Ethiopia-Industrial")
+
+vanblo_pval <- rbind(vanblo_pval,wt_ethtradi_vanblo %>%
+  group_by(Family, pval, p.value_bonf) %>%
+  summarise(Comparison = "Ethiopia-Traditional"))
+
+vanblo_pval <- rbind(vanblo_pval,wt_ethtransi_vanblo %>%
+  group_by(Family, pval, p.value_bonf) %>%
+  summarise(Comparison = "Ethiopia-Transitional"))
+
+vanblo_pval <- rbind(vanblo_pval,wt_tradiindu_vanblo %>%
+  group_by(Family, pval, p.value_bonf) %>%
+  summarise(Comparison = "Industrial-Traditional"))
+
+vanblo_pval <- rbind(vanblo_pval,wt_transitradi_vanblo %>%
+  group_by(Family, pval, p.value_bonf) %>%
+  summarise(Comparison = "Transitional-Traditional"))
+
+vanblo_pval <- rbind(vanblo_pval,wt_indutransi_vanblo %>%
+  group_by(Family, pval, p.value_bonf) %>%
+  summarise(Comparison = "Industrial-Transitional"))
+
+write.csv(vanblo_pval, "Wilcoxon_Bonf_VanBlo.csv")
+```
+# Differential abundance analysis
+```{r}
+## Significantly different families between lifestyles
+## Family 
+## For traditional samples 
+# vs Industrial
+physeq_tradi_indu_F <- tax_glom(physeq_tradi_indu, "Family")
+label_tradiIndu_F <- create.label(meta = sample_data(physeq_tradi_indu_F) , label = "Lifestyle", case = 'Traditional')
+tradiIndu_F_otu <- as.data.frame(otu_table(physeq_tradi_indu_F))
+rownames(tradiIndu_F_otu) <- make.unique(tax_table(physeq_tradi_indu_F)[,5])
+sc_tradiInduF.obj <- siamcat(feat = tradiIndu_F_otu,
+                  label = label_tradiIndu_F,
+                  meta = sample_data(physeq_tradi_indu_F))
+sc_tradiInduF.obj <- filter.features(sc_tradiInduF.obj,
+                          filter.method = 'abundance',
+                          cutoff = 0.01)
+show(sc_tradiInduF.obj)
+sc_tradiInduF.obj <- check.associations(sc_tradiInduF.obj, alpha = 0.05, fn.plot = 'association_plots_tradiInduFam.pdf')
+
+# vs Transitional
+physeq_tradi_transi_F <- tax_glom(physeq_tradi_transi, "Family")
+label_traditransi_F <- create.label(meta = sample_data(physeq_tradi_transi_F) , label = "Lifestyle", case = 'Traditional')
+traditransi_F_otu <- as.data.frame(otu_table(physeq_tradi_transi_F))
+rownames(traditransi_F_otu) <- make.unique(tax_table(physeq_tradi_transi_F)[,5])
+sc_traditransiF.obj <- siamcat(feat = traditransi_F_otu,
+                  label = label_traditransi_F,
+                  meta = sample_data(physeq_tradi_transi_F))
+sc_traditransiF.obj <- filter.features(sc_traditransiF.obj,
+                          filter.method = 'abundance',
+                          cutoff = 0.01)
+show(sc_traditransiF.obj)
+sc_traditransiF.obj <- check.associations(sc_traditransiF.obj, alpha = 0.05, fn.plot = 'association_plots_traditransiFam.pdf')
+
+#vs Ethiopia
+physeq_eth_tradi_F <- tax_glom(physeq_eth_tradi, "Family")
+label_Ethtradi_F <- create.label(meta = sample_data(physeq_eth_tradi_F) , label = "Lifestyle", case = 'Traditional')
+Ethtradi_F_otu <- as.data.frame(otu_table(physeq_eth_tradi_F))
+rownames(Ethtradi_F_otu) <- make.unique(tax_table(physeq_eth_tradi_F)[,5])
+sc_EthtradiF.obj <- siamcat(feat = Ethtradi_F_otu,
+                  label = label_Ethtradi_F,
+                  meta = sample_data(physeq_eth_tradi_F))
+sc_EthtradiF.obj <- filter.features(sc_EthtradiF.obj,
+                          filter.method = 'abundance',
+                          cutoff = 0.01)
+show(sc_EthtradiF.obj)
+sc_EthtradiF.obj <- check.associations(sc_EthtradiF.obj, alpha = 0.05, fn.plot = 'association_plots_EthtradiFam.pdf')
+
+
+tradi1F <- as.data.frame(rownames(associations(sc_tradiInduF.obj))[which(associations(sc_tradiInduF.obj)[, 10] < 0.05 &
+                                                                          associations(sc_tradiInduF.obj)[, 1] > 0)])
+names(tradi1F)[1] <- "Family"
+tradi2F <- as.data.frame(rownames(associations(sc_traditransiF.obj))[which(associations(sc_traditransiF.obj)[, 10] < 0.05 &
+                                                                           associations(sc_traditransiF.obj)[, 1] > 0 )])
+names(tradi2F)[1] <- "Family"
+tradi3F <- as.data.frame(rownames(associations(sc_EthtradiF.obj))[which(associations(sc_EthtradiF.obj)[, 10] < 0.05 &
+                                                                         associations(sc_EthtradiF.obj)[, 1] > 0)])
+names(tradi3F)[1] <- "Family"
+
+tradiF <- merge(tradi1F, tradi2F, by = c("Family","Family"), all.x = FALSE, all.y = FALSE)
+tradiF <- merge(tradiF, tradi3F, by = c("Family","Family"), all.x = FALSE, all.y = FALSE)
+
+
+# For industrial
+# vs ethiopia
+physeq_eth_indu_F <- tax_glom(physeq_eth_indu, "Family")
+label_EthIndu_F <- create.label(meta = sample_data(physeq_eth_indu_F) , label = "Lifestyle", case = 'Ethiopian')
+EthIndu_F_otu <- as.data.frame(otu_table(physeq_eth_indu_F))
+rownames(EthIndu_F_otu) <- make.unique(tax_table(physeq_eth_indu_F)[,5])
+sc_EthInduF.obj <- siamcat(feat = EthIndu_F_otu,
+                  label = label_EthIndu_F,
+                  meta = sample_data(physeq_eth_indu_F))
+sc_EthInduF.obj <- filter.features(sc_EthInduF.obj,
+                          filter.method = 'abundance',
+                          cutoff = 0.01)
+show(sc_EthInduF.obj)
+sc_EthInduF.obj <- check.associations(sc_EthInduF.obj, alpha = 0.05, fn.plot = 'association_plots_EthInduFam.pdf')
+
+# vs Transitional
+physeq_indu_transi_F <- tax_glom(physeq_indu_transi, "Family")
+label_indutransi_F <- create.label(meta = sample_data(physeq_indu_transi_F) , label = "Lifestyle", case = 'Industrial')
+indutransi_F_otu <- as.data.frame(otu_table(physeq_indu_transi_F))
+rownames(indutransi_F_otu) <- make.unique(tax_table(physeq_indu_transi_F)[,5])
+sc_indutransiF.obj <- siamcat(feat = indutransi_F_otu,
+                  label = label_indutransi_F,
+                  meta = sample_data(physeq_indu_transi_F))
+sc_indutransiF.obj <- filter.features(sc_indutransiF.obj,
+                          filter.method = 'abundance',
+                          cutoff = 0.01)
+show(sc_indutransiF.obj)
+sc_indutransiF.obj <- check.associations(sc_indutransiF.obj, alpha = 0.05, fn.plot = 'association_plots_indutransiFam.pdf')
+
+
+indu1F <- as.data.frame(rownames(associations(sc_tradiInduF.obj))[which(associations(sc_tradiInduF.obj)[, 10] < 0.05 &
+                                                                          associations(sc_tradiInduF.obj)[, 1] < 0)])
+names(indu1F)[1] <- "Family"
+indu2F <- as.data.frame(rownames(associations(sc_indutransiF.obj))[which(associations(sc_indutransiF.obj)[, 10] < 0.05 &
+                                                                           associations(sc_indutransiF.obj)[, 1] > 0 )])
+names(indu2F)[1] <- "Family"
+indu3F <- as.data.frame(rownames(associations(sc_EthInduF.obj))[which(associations(sc_EthInduF.obj)[, 10] < 0.05 &
+                                                                         associations(sc_EthInduF.obj)[, 1] < 0)])
+names(indu3F)[1] <- "Family"
+
+induF <- merge(indu1F, indu2F, by = c("Family","Family"), all.x = FALSE, all.y = FALSE)
+induF <- merge(induF, indu3F, by = c("Family","Family"), all.x = FALSE, all.y = FALSE)
+
+# For Transitional
+# vs Ethiopia
+physeq_eth_transi_F <- tax_glom(physeq_eth_transi, "Family")
+label_Ethtransi_F <- create.label(meta = sample_data(physeq_eth_transi_F) , label = "Lifestyle", case = 'Ethiopian')
+Ethtransi_F_otu <- as.data.frame(otu_table(physeq_eth_transi_F))
+rownames(Ethtransi_F_otu) <- make.unique(tax_table(physeq_eth_transi_F)[,5])
+sc_EthtransiF.obj <- siamcat(feat = Ethtransi_F_otu,
+                  label = label_Ethtransi_F,
+                  meta = sample_data(physeq_eth_transi_F))
+sc_EthtransiF.obj <- filter.features(sc_EthtransiF.obj,
+                          filter.method = 'abundance',
+                          cutoff = 0.01)
+show(sc_EthtransiF.obj)
+sc_EthtransiF.obj <- check.associations(sc_EthtransiF.obj, alpha = 0.05, fn.plot = 'association_plots_EthtransiFam.pdf')
+
+transi1F <- as.data.frame(rownames(associations(sc_EthtransiF.obj))[which(associations(sc_EthtransiF.obj)[, 10] < 0.05 &
+                                                                          associations(sc_EthtransiF.obj)[, 1] < 0)])
+names(transi1F)[1] <- "Family"
+transi2F <- as.data.frame(rownames(associations(sc_indutransiF.obj))[which(associations(sc_indutransiF.obj)[, 10] < 0.05 &
+                                                                           associations(sc_indutransiF.obj)[, 1] < 0 )])
+names(transi2F)[1] <- "Family"
+transi3F <- as.data.frame(rownames(associations(sc_traditransiF.obj))[which(associations(sc_traditransiF.obj)[, 10] < 0.05 &
+                                                                         associations(sc_traditransiF.obj)[, 1] < 0)])
+names(transi3F)[1] <- "Family"
+
+transiF <- merge(transi1F, transi2F, by = c("Family","Family"), all.x = FALSE, all.y = FALSE)
+transiF <- merge(transiF, transi3F, by = c("Family","Family"), all.x = FALSE, all.y = FALSE)
+
+
+# For Ethiopia
+eth1F <- as.data.frame(rownames(associations(sc_EthtransiF.obj))[which(associations(sc_EthtransiF.obj)[, 10] < 0.05 &
+                                                                          associations(sc_EthtransiF.obj)[, 1] > 0)])
+names(eth1F)[1] <- "Family"
+eth2F <- as.data.frame(rownames(associations(sc_EthInduF.obj))[which(associations(sc_EthInduF.obj)[, 10] < 0.05 &
+                                                                           associations(sc_EthInduF.obj)[, 1] > 0 )])
+names(eth2F)[1] <- "Family"
+eth3F <- as.data.frame(rownames(associations(sc_EthtradiF.obj))[which(associations(sc_EthtradiF.obj)[, 10] < 0.05 &
+                                                                         associations(sc_EthtradiF.obj)[, 1] < 0)])
+names(eth3F)[1] <- "Family"
+
+ethF <- merge(eth1F, eth2F, by = c("Family","Family"), all.x = FALSE, all.y = FALSE)
+ethF <- merge(ethF, eth3F, by = c("Family","Family"), all.x = FALSE, all.y = FALSE)
+```
+Ordered heatma with SIAMCAT results
+```{r}
+# Heatmap of the above significantly different families, ordered by lifestyle
+ps_hmF <- subset_taxa(physeq_ra, Family %in% induF$Family | Family %in% transiF$Family |
+                       Family %in% tradiF$Family | Family %in% ethF$Family)
+ps_hmF <- tax_glom(ps_hmF, "Family")
+#ps_hmF <- transform_sample_counts(ps_hmF, function(x) log(1+x))
+
+OTUcomF = as.data.frame(otu_table(ps_hmF))
+# Tax table
+TAXcomF = as.data.frame(tax_table(ps_hmF))
+# Metadata table
+METAcomF = as(sample_data(ps_hmF), "matrix")
+
+comF <-cbind(TAXcomF, OTUcomF)
+
+comF <-comF[, -c(1:4,6,7)]
+comF[, 1]<-as.character(comF[, 1])
+length(unique(comF[,1])) # unique species
+comF[, 1]<-make.unique(comF[, 1]) # Now X unique species
+rownames(comF) <- comF[,1] #assign rownames as species/family/phylum names
+comF <- comF[,-1] # remove column with names
+#comF <- t(comF)
+METAcomF <- t(METAcomF)
+
+comF <- t(comF)
+METAcomF_subs <- t(METAcomF)
+METAcomF_subs <- as.data.frame(METAcomF_subs)
+comF <- cbind(comF, METAcomF_subs)
+
+hunter_gatherer <- comF %>%
+   dplyr::filter(Subsistence =="Hunter-Gatherer")
+pastoralist <- comF %>%
+  dplyr::filter(Subsistence == "Pastoralist")
+agropastoralist <- comF %>%
+   dplyr::filter(Subsistence =="Agropastoralist" & Lifestyle != "Ethiopian")
+agriculturalist <- comF %>%
+  dplyr::filter(Subsistence == "Agriculturalist")
+ethio <- comF %>%
+  dplyr::filter(Lifestyle == "Ethiopian")
+rural <- comF %>%
+  dplyr::filter(Subsistence == "Rural")
+peri_urban <- comF %>%
+  dplyr::filter(Subsistence == "Peri-Urban")
+slum <- comF %>%
+  dplyr::filter(Subsistence == "Urban (Slum)" )
+urban <- comF %>%
+  dplyr::filter(Subsistence == "Urban European" | Subsistence == "Urban North-American")
+comF2 <- rbind(hunter_gatherer, pastoralist, agropastoralist, agriculturalist, ethio, rural, peri_urban,slum, urban)
+colnames(comF2)
+################################## change number
+comF2 <- comF2[,-c(28:38)]
+lifestyle <- rbind(hunter_gatherer, pastoralist, agropastoralist, agriculturalist,ethio, rural, peri_urban,slum, urban)
+lifestyle <- lifestyle[, -c(1:27)] 
+comF2 <- t(comF2)
+
+comF2 <- as.data.frame(comF2)
+comF3_prev = apply(X= otu_table(ps_hm),
+               MARGIN = ifelse(taxa_are_rows(ps_hm),
+              yes =1, no =2), FUN = function(x){sum(x>0)})
+comF3_prev = data.frame(Prevalence = comF3_prev,
+                        TotalAbundance = taxa_sums(ps_hm),
+                        tax_table(ps_hm))
+comF3_prev <- comF3_prev %>%
+  dplyr::filter(Prevalence > 0.01*696)
+
+comF_indu <- comF2 %>%
+  dplyr::filter(rownames(comF2) %in% induF$Family & rownames(comF2) %in% comF3_prev$Family)
+
+comF_transi <- comF2 %>%
+  dplyr::filter(rownames(comF2) %in% transiF$Family & rownames(comF2)  %in% comF3_prev$Family)
+
+comF_tradi <- comF2 %>%
+  dplyr::filter(rownames(comF2) %in% tradiF$Family & rownames(comF2)  %in% comF3_prev$Family)
+
+comF_eth <- comF2 %>%
+  dplyr::filter(rownames(comF2) %in% ethF$Family & rownames(comF2)  %in% comF3_prev$Family)
+
+comF3 <- rbind(comF_tradi, comF_eth, comF_transi, comF_indu[order(nrow(comF_indu):1),])
+comF3 <- as.matrix(comF3)
+
+pal_vanblo <- palbrew_all[c(69,66,67,68)]
+
+column_ha = HeatmapAnnotation(ls = lifestyle[,9], 
+                              col = list(ls=c("Traditional" = pal_vanblo[3],
+                                              "Ethiopian" = pal_vanblo[1],
+                                              "Transitional" = pal_vanblo[4],
+                                              "Industrial" = pal_vanblo[2])),
+                              annotation_label = "Lifestyle")
+split = rep("Traditional", 696)
+split[108:120] = "Ethiopian"
+split[121:212] = "Transitional"
+split[213:696] = "Industrial"
+
+splitF2 = rep("Traditional", 27)
+splitF2[12:14] = "Ethiopian"
+splitF2[15:17] = "Transitional"
+splitF2[18:27] = "Industrial"
+
+library(circlize)
+library(ComplexHeatmap)
+col_fun <- colorRamp2(c(0,0.5,1), c("white", "red", "black"))
+col_fun(seq(-3,3))
+
+
+pdf("HM_sigDiffFamily.pdf", width = 20, height = 7)
+Heatmap(comF3, name = "Relative abundance",
+        col = col_fun,
+        row_title = "Genus", column_title = "Samples",
+        column_split = factor(split,levels = c("Traditional", "Ethiopian", "Transitional", "Industrial")),
+        row_split = factor(splitF2, levels = c("Traditional", "Ethiopian", "Transitional", "Industrial")),
+        column_title_side = "bottom", cluster_rows = FALSE, cluster_columns = FALSE,
+        top_annotation = column_ha, show_column_names = FALSE, row_names_side = "left", border = TRUE
+        )
+dev.off()
+```
+Lefse
+```{r}
+# By groups
+physeq_eth_tradi <- subset_samples(physeq_ra, Lifestyle=="Ethiopian" | Lifestyle == "Traditional")
+physeq_eth_tradi <- prune_taxa(taxa_sums(physeq_eth_tradi)> 0, physeq_eth_tradi)
+lef_out_ethtrad <- run_lefse(physeq_eth_tradi, wilcoxon_cutoff = 0.01, group = "Lifestyle", taxa_rank = "Family", kw_cutoff = 0.05, norm = "CPM", multigrp_strat = TRUE, lda_cutoff = 2)
+pdf("Lefse_Eth_tradi.pdf")
+plot_ef_bar(lef_out_ethtrad)
+dev.off()
+
+lef_out_ethindu <- run_lefse(physeq_eth_indu_F, wilcoxon_cutoff = 0.01, group = "Lifestyle", taxa_rank = "Family", kw_cutoff = 0.05, norm = "CPM", multigrp_strat = TRUE, lda_cutoff = 2)
+pdf("Lefse_Eth_indu.pdf")
+plot_ef_bar(lef_out_ethindu)
+dev.off()
+
+lef_out_ethtrans <- run_lefse(physeq_eth_transi_F, wilcoxon_cutoff = 0.01, group = "Lifestyle", taxa_rank = "Family", kw_cutoff = 0.05, norm = "CPM", multigrp_strat = TRUE, lda_cutoff = 2)
+pdf("Lefse_Eth_trans.pdf")
+plot_ef_bar(lef_out_ethtrans)
+dev.off()
+```

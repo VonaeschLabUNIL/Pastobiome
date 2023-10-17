@@ -1,0 +1,1709 @@
+RMarkDown for the analysis of the shotgun metagenomic dataset, including the composition analysis with mOTUs, the metabolic pathways from Humann3 and the resistome from RGI.
+
+#Loading library
+```{r, warning=FALSE}
+library(Biostrings)
+library(devtools)
+library(phyloseq)
+library(tidyr)
+library(plyr)
+library(readxl)
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(vegan)
+library(microbiome)
+library(ape)
+library(ggpubr)
+library(ggsignif)
+library(ggprism)
+library(pheatmap)
+library(picante)
+library(magrittr)
+library(clusterCrit)
+library(RColorBrewer)
+library(ggcorrplot)
+library(VennDiagram)
+library(ggprism)
+library(glue)
+library(DECIPHER)
+library(phangorn)
+library(QsRutils)
+library(SIAMCAT)
+library(ComplexHeatmap)
+```
+
+# A. Composition
+# 1. Taxonomy table
+```{r}
+#Extracting taxonomic information from mOTUs table
+tax <- read_excel("Tables/Additional\ file\ 3.xlsx", sheet = "mOTUs_table")
+names(tax)[1] <- "ASV"
+
+## Taxonomy table
+tax_names_tab <- str_split_fixed(tax$consensus_taxonomy, "\\|[k,p,c,o,f,g,s]__", 7)
+tax_names_tab[,1] <- str_remove(tax_names_tab[,1], "k__")
+tax_names_tab <- as.data.frame(tax_names_tab)
+colnames(tax_names_tab) <- c("Kingdom", "Phylum", "Clade","Order","Family","Genus","Species")
+tax_names_tab <- cbind(tax_names_tab, tax$ASV)
+names(tax_names_tab)[8] <- "ASV"
+tax_names_tab[,8] <- str_replace(tax_names_tab[,8], "ref_mOTU_v2_", "ASV")
+tax_names_tab[,8] <- str_replace(tax_names_tab[,8], "meta_mOTU_v2_", "ASV")
+tax_names_tab[,8] <- str_replace(tax_names_tab[,8], "-1", "ASVNA")
+rownames(tax_names_tab) <- tax_names_tab$ASV
+tax_names_tab["ASVNA",1:7] <- "Unassigned"
+asv_num_tab <- tax_names_tab$ASV
+tax_names_tab <- tax_names_tab[,-8]
+tax_names_tab <- as.matrix(tax_names_tab)
+taxonomy <- tax_table(tax_names_tab)
+```
+# 2.  Abundance tables
+```{r}
+#Ethiopia
+otu_table <- tax[,-c(1,2,3)]
+otu_table <- as.matrix(otu_table)
+rownames(otu_table) <- asv_num_tab
+colnames(otu_table) <- str_replace(colnames(otu_table), "_FASTP_READS", "")
+otu_table <- as.matrix(otu_table)
+class(otu_table) <- "numeric"
+taxa = otu_table(otu_table, taxa_are_rows = TRUE)
+```
+# 3. Metadata
+```{r}
+md_all <- read_excel("Tables/Additional\ file\ 2.xlsx", sheet = "Shotgun_metagenomic_metadata")
+md_all <- as.data.frame(md_all)
+rownames(md_all) <- md_all$fastqID
+metadata <- sample_data(md_all)
+```
+# Phyloseq
+```{r}
+physeqMG <- phyloseq(taxa, taxonomy)
+physeqMG = merge_phyloseq(metadata, physeqMG)
+```
+# Filtering & relative abundance
+```{r}
+physeqMG_filtered <- physeqMG %>%
+  subset_taxa(Family != "Mitochondria") %>%
+  subset_taxa(Order != "Chloroplast") %>%
+  subset_taxa(Kingdom != "Eukaryota") %>%
+  subset_taxa(Kingdom != "unknown cellular organisms")
+# Removing taxa with abundance 0
+physeqMG_filtered <- prune_taxa(taxa_sums(physeqMG_filtered) > 0, physeqMG_filtered)
+physeqMG_ra <- transform_sample_counts(physeqMG_filtered, function(x) x / sum(x))
+```
+## Frequency plots
+Color palette
+```{r}
+palbrew_info <- brewer.pal.info[brewer.pal.info$category == "qual", ] 
+palbrew_all <- unlist(mapply(brewer.pal,palbrew_info$maxcolors,rownames(palbrew_info)))
+# Set color palette
+# Phylum palette
+pal_phyl <- palbrew_all[c(63,46,64,47,48,16,72,66,67,50,69,51,52,53,61,70,74)]
+#Vanish/Blossum palette
+pal_lifestyle  <- palbrew_all[c(69,66,67,68)]
+# Cluster
+pal_clrs <- palbrew_all[16:26]
+```
+### Family
+Top 10 fam Ethiopia
+```{r}
+physeq_ethiopia <- subset_samples(physeqMG_ra, Country=="Ethiopia")
+physeq_ethiopia <- prune_taxa(taxa_sums(physeq_ethiopia)> 0, physeq_ethiopia)
+ethiopia10 <- tax_glom(physeq_ethiopia, taxrank = "Family")
+TopN_ethiopia <- names(sort(taxa_sums(ethiopia10), TRUE)[1:10])
+ethiopia10 <- prune_taxa(TopN_ethiopia, ethiopia10)
+ethiopia10_melt <- psmelt(ethiopia10)
+pdf("MG_Top10Fam_Ethiopia.pdf")
+ggplot(ethiopia10_melt, aes(x = Family, y = Abundance)) +
+  geom_boxplot(aes(fill = Family), alpha = .3) +
+  geom_point(colour = "black", size = 1.5) +
+  geom_point(aes(color = Family), size =1) +
+  scale_color_brewer(palette = "Set3") +
+  scale_fill_brewer(palette = "Set3") +
+  theme_bw() +
+  theme(legend.position = "none", axis.text.x =  element_text(angle = 45, hjust = .9))
+dev.off()
+```
+Vanish/Blossum families
+```{r}
+vanblo_fam <- tax_glom(physeqMG_ra, taxrank = "Family")
+vanblo_fam <- subset_taxa(vanblo_fam,Family == "Akkermansiaceae"| Family == "Bacteroidaceae"|
+                                Family =="Prevotellaceae"| Family == "Succinivibrionaceae"|
+                               Family == "Streptococcaceae" | Family == "Lactobacillaceae" |
+                           Family == "Bifidobacteriaceae" |  Family == "Erysipelotrichaceae")
+vanblo_fam_melt <- psmelt(vanblo_fam)
+pdf("MG_VanBlo_fam.pdf")
+ggplot(vanblo_fam_melt, aes(x = Lifestyle, y = Abundance)) +
+  geom_boxplot(aes(fill = Lifestyle), alpha = .3) +
+  geom_point(colour = "black", size = 1.5) +
+  geom_point(aes(color = Lifestyle),  size =1) +
+  scale_color_manual(values= pal_lifestyle)+
+  scale_fill_manual(values = pal_lifestyle) +
+  facet_wrap(~Family, nrow = 2) +
+  geom_signif(comparisons = list(c("Ethiopian", "Industrial"),c("Ethiopian", "Traditional"),
+                                 c("Ethiopian", "Transitional"), c("Industrial", "Traditional"),
+                                 c("Transitional", "Industrial"),c("Traditional", "Transitional")),
+              map_signif_level = TRUE,
+              y_position = c(0.65,0.75, 
+                             0.85, 0.55, 0.95, 0.65), tip_length = 0.01) +
+  theme_bw() +
+  theme(legend.position = "right", axis.text.x =  element_text(angle = 45, hjust = .9))
+dev.off()
+```
+# Alpha diversity
+```{r}
+# Species
+physeqMG_sp <- tax_glom(physeqMG_filtered, "Species", NArm = FALSE)
+physeqMG_rar_glom = prune_samples(sample_sums(physeqMG_sp)>= 1000, physeqMG_sp)
+set.seed(1024)
+physeqMG_rar_glom <-rarefy_even_depth(physeqMG_rar_glom, sample.size = 1000, replace = FALSE)
+```
+Wilcoxon test
+```{r}
+results_sp = estimate_richness(physeqMG_rar_glom)
+dsp = sample_data(physeqMG_rar_glom)
+ZimbabweWsp = results_sp[dsp[,'Country']=='Zimbabwe',]
+TanzaniaWsp = results_sp[dsp[,'Country']=='Tanzania',]
+JOHIWsp = results_sp[dsp[,'Country']=='Ethiopia',]
+PeruTradWsp = results_sp[dsp[,'Country']=='Peru_traditional',]
+PeruTransWsp = results_sp[dsp[,'Country']=='Peru_transitional',]
+USAWsp = results_sp[dsp[,'Country']=='USA',]
+SalvadorWsp = results_sp[dsp[,'Country']=='El Salvador',]
+p_val_wilcox_sp <- data.frame(Measure = c("Chao1 ASV", "Shannon ASV"),
+                           Zimbabwe = c(wilcox.test(JOHIWsp$Chao1, ZimbabweWsp$Chao1)$p.value,
+                                        wilcox.test(JOHIWsp$Shannon, ZimbabweWsp$Shannon)$p.value),
+                           Tanzania = c(wilcox.test(JOHIWsp$Chao1, TanzaniaWsp$Chao1)$p.value,
+                                        wilcox.test(JOHIWsp$Shannon, TanzaniaWsp$Shannon)$p.value),
+                            PeruTrad = c(wilcox.test(JOHIWsp$Chao1, PeruTradWsp$Chao1)$p.value,
+                                        wilcox.test(JOHIWsp$Shannon, PeruTradWsp$Shannon)$p.value),
+                             PeruTrans = c(wilcox.test(JOHIWsp$Chao1, PeruTransWsp$Chao1)$p.value,
+                                        wilcox.test(JOHIWsp$Shannon, PeruTransWsp$Shannon)$p.value),
+                             USA = c(wilcox.test(JOHIWsp$Chao1, USAWsp$Chao1)$p.value,
+                                        wilcox.test(JOHIWsp$Shannon, USAWsp$Shannon)$p.value),
+                           Salvador = c(wilcox.test(JOHIWsp$Chao1, SalvadorWsp$Chao1)$p.value,
+                                        wilcox.test(JOHIWsp$Shannon, SalvadorWsp$Shannon)$p.value))
+rownames(p_val_wilcox_sp) <- p_val_wilcox_sp[,1]
+p_val_wilcox_sp <- p_val_wilcox_sp[,-1]
+wilcox_test <- p_val_wilcox_sp
+wilcox_testBonf <- p_val_wilcox_sp
+wilcox_testBonf <- wilcox_testBonf *6 # Bonferonni correction, 6 tests in each group
+rownames(wilcox_testBonf) <- paste(rownames(wilcox_testBonf), "Bonferroni")
+wilcox_test <- rbind(wilcox_test, wilcox_testBonf)
+wilcox_test <- wilcox_test %>%
+  mutate(Tests = rownames(wilcox_test))
+write.csv(wilcox_test,"WilcoxonTest_Country_MG.csv")
+```
+Save results tables
+```{r}
+MGresultsalpha_glom= estimate_richness(physeqMG_rar_glom,measures = c("Observed", "Chao1", "Shannon", "InvSimpson"))
+MGDataAlpha_glom=(sample_data(MGresultsalpha_glom))
+MGDataAlpha_glom$SampleID=rownames(MGDataAlpha_glom)
+write.csv(MGDataAlpha_glom,"MGDataAlphaDiv_Specie_Country.csv")
+```
+# Beta diversity
+Species
+```{r}
+# prune taxa that are singeltons
+physeqMG_prunedSP = prune_taxa(taxa_sums(physeqMG_sp)> 1, physeqMG_sp)
+# Remove samples with sum abundance under 1000
+physeqMG_prunedSP = prune_samples(sample_sums(physeqMG_prunedSP)>= 1000, physeqMG_prunedSP)
+# Removed 5 samples
+# Rarefaction of the pruned phyloseq
+set.seed(1024)
+physeqMG_pruned_rarSP <- rarefy_even_depth(physeqMG_prunedSP, sample.size = min(sample_sums(physeqMG_prunedSP)), replace = FALSE)
+#Log transform
+# add pseudo count due to zero inflated data
+physeqMG_prlSP <- transform_sample_counts(physeqMG_pruned_rarSP, function(x) log(1+x))
+```
+Distance and ordination
+```{r}
+# Bray-Curtis
+dist.bc.sp <- phyloseq::distance(physeqMG_prlSP, method = "bray")
+test_PCoAbray_sp <- ordinate(physeqMG_prlSP, "PCoA", distance = dist.bc.sp)
+pdf("PCoA (Bray-Curtis distance) on full dataset_species.pdf")
+plot_ordination(physeqMG_prlSP, test_PCoAbray_sp, type = "samples", color = "Country", shape = "Subsistence") +
+  theme_bw() +
+  scale_shape_manual(values=c(0:9)) +
+  scale_color_brewer(palette = "Paired") +
+  ggtitle("PCoA (Bray-Curtis distance) on full dataset")
+dev.off()
+```
+Test ADONIS for Bray-Curtis
+```{r}
+meta_pcoa = as.matrix(sample_data(physeqMG_prlSP))
+meta_pcoa <- as.data.frame(meta_pcoa)
+# distance matrix
+distance_pcoa_bc <- dist.bc.sp
+# adonis test on whole dataset
+wgs_test_bc <- vegan::adonis(distance_pcoa_bc ~ Lifestyle, data = meta_pcoa)
+#p.value
+wgs_test_bc$aov.tab$`Pr(>F)`[1] # 0.001
+# What pair of samples are significantly different
+library(usedist)
+pairewise_p <- numeric()
+eth_indu_ado <- meta_pcoa %>%
+  filter(Lifestyle == "Ethiopian" | Lifestyle == "Industrial")
+eth_indu_dist <- dist_subset(distance_pcoa_bc, eth_indu_ado$fastqID)
+eth_indu_dist <- adonis(eth_indu_dist ~ Lifestyle, 
+                       data = eth_indu_ado, 
+                       permutations = 1000)
+pairewise_p["Eth_indu"] <- eth_indu_dist$aov.tab$`Pr(>F)`[1]
+
+eth_tradi_ado <- meta_pcoa %>%
+  filter(Lifestyle == "Ethiopian" | Lifestyle == "Traditional")
+eth_tradi_dist <- dist_subset(distance_pcoa_bc, eth_tradi_ado$fastqID)
+eth_tradi_tado <- adonis(eth_tradi_dist ~ Lifestyle, 
+                       data = eth_tradi_ado, 
+                       permutations = 1000)
+pairewise_p["Eth_tradi"] <- eth_tradi_tado$aov.tab$`Pr(>F)`[1]
+
+eth_transi_ado <- meta_pcoa %>%
+  filter(Lifestyle == "Ethiopian" | Lifestyle == "Transitional")
+eth_transi_dist <- dist_subset(distance_pcoa_bc, eth_transi_ado$fastqID)
+eth_transi_tado <- adonis(eth_transi_dist ~ Lifestyle, 
+                       data = eth_transi_ado, 
+                       permutations = 1000)
+pairewise_p["Eth_transi"] <- eth_transi_tado$aov.tab$`Pr(>F)`[1]
+
+tradi_indu_ado <- meta_pcoa %>%
+  filter(Lifestyle == "Industrial" | Lifestyle == "Traditional")
+tradi_indu_dist <- dist_subset(distance_pcoa_bc, tradi_indu_ado$fastqID)
+tradi_indu_tado <- adonis(tradi_indu_dist ~ Lifestyle, 
+                       data = tradi_indu_ado, 
+                       permutations = 1000)
+pairewise_p["tradi_Indu"] <- tradi_indu_tado$aov.tab$`Pr(>F)`[1]
+
+transi_indu_ado <- meta_pcoa %>%
+  filter(Lifestyle == "Industrial" | Lifestyle == "Transitional")
+transi_indu_dist <- dist_subset(distance_pcoa_bc, transi_indu_ado$fastqID)
+transi_indu_tado <- adonis(transi_indu_dist ~ Lifestyle, 
+                       data = transi_indu_ado, 
+                       permutations = 1000)
+pairewise_p["transi_Indu"] <- transi_indu_tado$aov.tab$`Pr(>F)`[1]
+
+transi_tradi_ado <- meta_pcoa %>%
+  filter(Lifestyle == "Traditional" | Lifestyle == "Transitional")
+transi_tradi_dist <- dist_subset(distance_pcoa_bc, transi_tradi_ado$fastqID)
+transi_tradi_tado <- adonis(transi_tradi_dist ~ Lifestyle, 
+                       data = transi_tradi_ado, 
+                       permutations = 1000)
+pairewise_p["transi_tradi"] <- transi_tradi_tado$aov.tab$`Pr(>F)`[1]
+
+# Adjust p values: use p.adjust in base R
+pairwise_padj <- p.adjust(pairewise_p, method = "BH")
+write.csv(pairwise_padj,"WGS_BC_ADONIS_p.adjust.csv")
+```
+# Clustering
+```{r}
+physeq_hm <- tax_glom(physeqMG_ra, "Species", NArm = FALSE)
+OTUhm = as.data.frame(otu_table(physeq_hm))
+TAXhm = as.data.frame(tax_table(physeq_hm))
+METAhm = as.data.frame(sample_data(physeq_hm))
+reads <-cbind(TAXhm, OTUhm)
+reads <-reads[, -(1:5)]
+reads$Name <- str_c(reads$Genus, '_', reads$Species)
+reads[, 105]<-as.character(reads[, 105])
+rownames(reads) <- reads[,105] #assign rownames as species/family/phylum names
+reads <- reads[,-c(1,2,105)] # remove column with names
+reads <- t(reads) # transpose as we want columns with taxa names and rows with samples names 
+# Now table with column being unique taxa, rows being each sample, each cases contains abundance
+# copy into a new table
+reads_hm <- reads
+
+# hierarchical clustering using Ward D linkage 
+hc=hclust(dist(reads_hm),method="ward.D")
+plot(hc, hang=-1)
+dend=as.dendrogram(hc)
+CH <- vector("numeric", 9L)
+for (k in 2:10){
+      clrs=cutree(hc,k=k)
+      CH[k-1] = intCriteria(as.matrix(reads_hm),clrs,"all")$calinski_harabasz
+    }
+ggplot() +
+        geom_point(aes(x=c(2:10),y=CH)) +
+        geom_line(aes(x=c(2:10),y=CH)) +
+        xlab("Number of clusters (k)") +
+        ylab("Calinski-Harabasz index") +
+        theme_minimal()
+# 2 clusters
+nClrs=2
+clrs=cutree(hc,k=nClrs)
+clrs <- as.data.frame(clrs)
+clrs <- data.frame(Cluster = ifelse(test = clrs == 1, yes = "Cluster 1",no = "Cluster 2"))
+# Adding clusters to metadata dataframe
+METAhm <- cbind(METAhm, clrs)
+colnames(METAhm)[10] <- "Cluster"
+
+sample_data(physeq_hm) <- cbind(sample_data(physeq_hm), clrs)
+#Test significantly different abundance of taxa between two clusters
+physeq_hm_comp <- psmelt(physeq_hm)
+physeq_hm_comp$Name <- str_c(physeq_hm_comp$Genus, '_', physeq_hm_comp$Species)
+wil_test_hm <- physeq_hm_comp %>%
+  group_by(Name) %>%
+  mutate(pval = wilcox.test(Abundance ~ clrs, paired = F)$p.value)
+wil_test_hm['p.value_bonf'] <- wil_test_hm$pval * length(unique(wil_test_hm$Name))
+hm_sig <- unique(wil_test_hm[which(wil_test_hm$p.value_bonf < 0.05), "Species"])
+clrs_wiltest <- wil_test_hm %>% 
+  dplyr::filter(p.value_bonf < 0.05) %>%
+  group_by(Name, pval, p.value_bonf) %>%
+  summarise(Comparison = "Cluster 1-2")
+write.csv(clrs_wiltest, "Cluster_WilcoxonBonfSignSpecies.csv")
+# 30 species significantly different between the two clusters
+# merging subest phyloseq
+physeq_hmTop <- subset_taxa(physeq_hm, Species %in% hm_sig$Species)
+
+OTUhmTop = as.data.frame(otu_table(physeq_hmTop))
+TAXhmTop = as.data.frame(tax_table(physeq_hmTop))
+## Matrix for heatmap
+readsTop <-cbind(TAXhmTop, OTUhmTop)
+colnames(readsTop)
+readsTop <-readsTop[, -(1:6)]
+length(unique(readsTop[,1])) # unique species
+readsTop[, 1]<-make.unique(readsTop[, 1]) # Now X unique species
+rownames(readsTop) <- readsTop[,1] #assign rownames as species/family/phylum names
+readsTop <- readsTop[,-1]
+readsTop <- as.matrix(readsTop)
+# Heatmap annotations
+library(ComplexHeatmap)
+column_hm = HeatmapAnnotation(ls = METAhm[,8], clst = METAhm[,10],
+                              col = list(ls=c("Traditional" = pal_lifestyle[3],
+                                              "Ethiopian" = pal_lifestyle[1],
+                                              "Transitional" = pal_lifestyle[4],
+                                              "Industrial" = pal_lifestyle[2]),
+                                         clst = c("Cluster 1" = pal_clrs[3], 
+                                                  "Cluster 2" =pal_clrs[9])),
+                              annotation_label = c("Lifestyle","Clusters"))
+pdf("heatmap_top10SpeciesRED.pdf", width = 20, height = 7)
+Heatmap(readsTop, name = "Relative abundance",
+        col = RColorBrewer::brewer.pal(9,"RdYlGn"),
+        row_title = "Taxa", 
+        cluster_rows = TRUE, cluster_columns = function(m) as.dendrogram(hc) ,top_annotation = column_hm,
+        show_column_names = FALSE, row_names_side = "left", row_names_max_width = max_text_width(rownames(readsTop), 
+        gp = gpar(fontsize = 12)))
+dev.off()
+```
+Chi squared
+```{r}
+physeq_chi <- physeq_hm
+names(sample_data(physeq_chi))[10] <- "Cluster"
+# Country
+sample_data(physeq_chi)$nSample[sample_data(physeq_chi)$Country == "Tanzania"] <- length(which(sample_data(physeq_chi)$Country == "Tanzania")==TRUE)
+sample_data(physeq_chi)$nSample[sample_data(physeq_chi)$Country == "Ethiopia"] <- length(which(sample_data(physeq_chi)$Country == "Ethiopia")==TRUE)
+sample_data(physeq_chi)$nSample[sample_data(physeq_chi)$Country == "Peru_traditional"] <- length(which(sample_data(physeq_chi)$Country == "Peru_traditional")==TRUE)
+sample_data(physeq_chi)$nSample[sample_data(physeq_chi)$Country == "Peru_transitional"] <- length(which(sample_data(physeq_chi)$Country == "Peru_transitional")==TRUE)
+sample_data(physeq_chi)$nSample[sample_data(physeq_chi)$Country == "USA"] <- length(which(sample_data(physeq_chi)$Country == "USA")==TRUE)
+sample_data(physeq_chi)$nSample[sample_data(physeq_chi)$Country == "El Salvador"] <- length(which(sample_data(physeq_chi)$Country == "El Salvador")==TRUE)
+sample_data(physeq_chi)$nSample[sample_data(physeq_chi)$Country == "Zimbabwe"] <- length(which(sample_data(physeq_chi)$Country == "Zimbabwe")==TRUE)
+df_pop <- as.data.frame(unique(sample_data(physeq_chi)[,6]))
+df_pop <- as.matrix(df_pop)
+for(i in 1:9){
+  sample_data(physeq_chi)$nPop[sample_data(physeq_chi)$Population == df_pop[i,]] <- length(which(sample_data(physeq_chi)$Population == df_pop[i,])==TRUE)
+}
+# Metadata table
+md_hm = as(sample_data(physeq_chi), "matrix")
+md_hm <- as.data.frame(md_hm)
+chi_tan <- md_hm %>%
+  dplyr::filter(Country=="Tanzania")
+chi_eth <- md_hm %>%
+  dplyr::filter(Country=="Ethiopia")
+chi_per_tradi <- md_hm %>%
+  dplyr::filter(Country=="Peru_traditional")
+chi_per_transi <- md_hm %>%
+  dplyr::filter(Country=="Peru_transitional")
+chi_usa <- md_hm %>%
+  dplyr::filter(Country=="USA")
+chi_sal <- md_hm %>%
+  dplyr::filter(Country=="El Salvador")
+chi_zim <- md_hm %>%
+  dplyr::filter(Country=="Zimbabwe")
+chi_tan$nSample <- as.numeric(chi_tan$nSample)
+chi_eth$nSample <- as.numeric(chi_eth$nSample)
+chi_per_tradi$nSample <- as.numeric(chi_per_tradi$nSample)
+chi_per_transi$nSample <- as.numeric(chi_per_transi$nSample)
+chi_usa$nSample <- as.numeric(chi_usa$nSample)
+chi_sal$nSample <- as.numeric(chi_sal$nSample)
+chi_zim$nSample <- as.numeric(chi_zim$nSample)
+
+#Percentage
+chi_tan <- chi_tan %>%
+  mutate(relCount = 100/nSample)
+chi_eth <- chi_eth %>%
+  mutate(relCount = 100/nSample)
+chi_per_tradi <- chi_per_tradi %>%
+  mutate(relCount = 100/nSample)
+chi_per_transi <- chi_per_transi %>%
+  mutate(relCount = 100/nSample)
+chi_usa <- chi_usa %>%
+  mutate(relCount = 100/nSample)
+chi_sal <- chi_sal %>%
+  mutate(relCount = 100/nSample)
+chi_zim <- chi_zim %>%
+  mutate(relCount = 100/nSample)
+md_hm <- rbind(chi_tan, chi_eth,chi_per_tradi, chi_per_transi, 
+               chi_usa, chi_sal, chi_zim)
+chi_tan <- chi_tan %>% 
+  group_by(Country, Lifestyle, Cluster) %>% 
+  summarise(Clust_per = sum(relCount))
+chi_eth <- chi_eth %>% 
+  group_by(Country, Lifestyle, Cluster) %>% 
+  summarise(Clust_per = sum(relCount))
+chi_per_tradi <- chi_per_tradi %>% 
+  group_by(Country, Lifestyle, Cluster) %>% 
+  summarise(Clust_per = sum(relCount))
+chi_per_transi <- chi_per_transi %>% 
+  group_by(Country, Lifestyle, Cluster) %>% 
+  summarise(Clust_per = sum(relCount))
+chi_usa <- chi_usa %>% 
+  group_by(Country, Lifestyle, Cluster) %>% 
+  summarise(Clust_per = sum(relCount))
+chi_sal <- chi_sal %>% 
+  group_by(Country, Lifestyle, Cluster) %>% 
+  summarise(Clust_per = sum(relCount))
+chi_zim <- chi_zim %>% 
+  group_by(Country, Lifestyle, Cluster) %>% 
+  summarise(Clust_per = sum(relCount))
+md_chi_country <- rbind(chi_tan, chi_eth,chi_per_tradi, chi_per_transi, chi_usa,chi_sal, chi_zim)
+```
+Chi squared test
+```{r}
+# Countries
+chi.sq_countries = table(md_hm$Country, md_hm$Cluster)
+chi.sq_countries
+chisq_cou <- matrix(ncol = 7, nrow = 7)
+colnames(chisq_cou) <- rownames(chi.sq_countries)
+rownames(chisq_cou) <- rownames(chi.sq_countries)
+for (i in 1:7){
+  for (j in 1:7) {
+     chisq_cou[i,j] <- chisq.test(chi.sq_countries[c(i,j),])$p.value
+      j= j+1
+     }
+  
+  i = i+1
+}
+write.csv(chi.sq_countries, "Country_clrs.csv")
+write.csv(chisq_cou, "Chitest_country.csv")
+```
+
+# B. Functional Profile
+```{r}
+gene_families <- read.delim("Tables/PWY/humann_genefamilies_relab.tsv")
+path_abundance <- read_excel("Tables/Additional\ file\ 3.xlsx", sheet = "Humann_pathways")
+```
+Gene table
+See how many gene detected in Ethiopia
+```{r}
+gene_fam_uniref <- as.data.frame(gene_families[,1])
+names(gene_fam_uniref)[1] <- "UniRef90"
+gene_fam_uniref <- as.data.frame(str_split_fixed(gene_fam_uniref$UniRef90, "\\|",2))
+gene_fam <- gene_families
+colnames(gene_fam) <- str_remove(colnames(gene_fam), "_Abundance.RPKs")
+gene_fam <- cbind(gene_fam_uniref, gene_fam)
+
+# Subset JOHI
+gene_johi <- gene_fam[,which(colnames(gene_fam) %in% metadata$fastqID)]
+gene_johi <- cbind(gene_fam_uniref, gene_johi)
+gene_johi_ur <- gene_johi[which(gene_johi[,2]==""),-2]
+rownames(gene_johi_ur) <- gene_johi_ur$V1
+gene_johi_ur <- gene_johi_ur[,-1]
+gene_johi_ur <- gene_johi_ur %>%
+  mutate(sum_gene = rowSums(gene_johi_ur))
+gene_johi_ur <- gene_johi_ur[which(gene_johi_ur$sum_gene != 0),]
+# 1'400'457 gene detected in JOHI 
+```
+Pathways tables
+Cleaning table
+```{r}
+names(path_abundance)[1] <- "Pathways"
+pathways <- str_split_fixed(path_abundance$Pathways, "\\|", 3)
+# Bacteria table
+pathways_bact <- as.data.frame(str_split_fixed(pathways[,2], "\\.",2))
+names(pathways_bact)[1] <- "Genus"
+names(pathways_bact)[2] <- "Species"
+# Pathway names table
+pathways_names <- as.data.frame(str_split_fixed(pathways[,1], "\\:", 2))
+names(pathways_names)[1] <- "PWY"
+names(pathways_names)[2] <- "Details"
+# Binding the two above and cleaning
+pathways <- cbind(pathways_names, pathways_bact)
+pathways <- as.data.frame(pathways)
+pathways$Genus <- str_remove(pathways$Genus, "g__")
+pathways$Species <- str_remove(pathways$Specie, "s__")
+# Table with all pathway with relative abundance, with names of pathway and bacteria split (but not abundance in samples)
+path_abun_split <- cbind(pathways, path_abundance)
+# Pathway relab abundance without bacteria details and pathway name split in two columns
+# Not redo relative abundance a second time as it's already done by Humann3
+pathways_relab <- path_abun_split[which(path_abun_split[,3] == ""),-c(3:5)]
+path_relab_mean <- cbind(pathways_relab[,1:2],rowSums(pathways_relab[,3:104])/102)
+names(path_relab_mean)[3] <- "Mean_relab"
+```
+MetaCyc mapping table
+Adding superclasses info
+```{r}
+path_meta <- read.delim("Tables/PWY/MetaCyc_PWY_map.txt", header = TRUE, sep = "\t")
+path_names <- path_relab_mean[,-3]
+path_map <- merge(path_meta, path_names, by.x = "PWY", by.y = "PWY", all.y=TRUE)
+path_ra_mapped <- merge(pathways_relab, path_map, by.x = "PWY", by.y="PWY", all.y=TRUE)
+path_ra_mapped <- path_ra_mapped[,c(105:108, 1:104)]
+names(path_ra_mapped)[6] <- "PWY_Humann"
+path_ra_mapped <- path_ra_mapped[,-4]
+```
+# MetaCyc phyloseq
+```{r}
+# Tax table
+pwy_fullmap <- read.delim("Tables/PWY/MetaCyc_PWY_map.txt", header = TRUE, sep = "\t")
+rownames(pwy_fullmap) <- pwy_fullmap$PWY
+pwy <- tax_table(as.matrix(pwy_fullmap))
+
+# Abundance table
+abun_map <- path_ra_mapped[,c(4,6:107)] 
+rownames(abun_map) <- abun_map$PWY
+abun_map <- abun_map[,-1]
+colnames(abun_map) <- str_remove(colnames(abun_map), "_Abundance")
+abun <- otu_table(abun_map, taxa_are_rows = TRUE)
+
+# Phyloseq object
+ps_pwy <- phyloseq(pwy, abun)
+ps_pwy <- merge_phyloseq(metadata, ps_pwy)
+ps_pwy_ethiopia <- subset_samples(ps_pwy, Country == "Ethiopia")
+ps_pwy_ethiopia_m <- psmelt(ps_pwy_ethiopia)
+pdf("Barplot_pwy_ethiopia.pdf")
+ps_pwy_ethiopia_m %>%
+  ggplot(aes_string(x = "Sample", y = "Abundance", fill = "Superclass1")) +
+  geom_bar(stat = "identity", position = "stack") + 
+  theme_bw() + 
+  theme(legend.position = "right", axis.text.x =  element_text(angle = 80, vjust = 0.5))
+dev.off()
+```
+Filter metacyc
+```{r}
+# Filter Unintergrated and Unmapped
+ps_pwy_filt <- ps_pwy %>%
+  subset_taxa(PWY != "UNINTEGRATED") %>%
+  subset_taxa(PWY != "UNMAPPED") 
+```
+Pathways prevalence
+```{r}
+# Which pathways are in Ethiopia
+ps_johi <- subset_samples(ps_pwy, Country =="Ethiopia")
+ps_johi <- prune_taxa(taxa_sums(ps_johi)> 0, ps_johi)
+# Which pathways are not in Ethiopia
+ps_NOTjohi <- subset_samples(ps_pwy, Country =="Ethiopia")
+ps_NOTjohi <- prune_taxa(taxa_sums(ps_NOTjohi) == 0, ps_NOTjohi)
+# Which pathways are in the other countries
+ps_other <- subset_samples(ps_pwy, Country != "Ethiopia")
+ps_other <- prune_taxa(taxa_sums(ps_other)> 0, ps_other)
+# Which pathways are in Ethiopia but not other countries
+ps_NOTother <- subset_samples(ps_pwy, Country != "Ethiopia")
+ps_NOTother <- prune_taxa(taxa_sums(ps_NOTother) == 0, ps_NOTother)
+# Three ps: 1 without unintegrated and unmapped, 2 unmapped, 3 unintegrated
+ps_johi_filt <- ps_johi %>%
+  subset_taxa(PWY != "UNINTEGRATED") %>%
+  subset_taxa(PWY != "UNMAPPED")
+ps_unmapped <- ps_johi %>%
+  subset_taxa(PWY == "UNMAPPED")
+ps_unint <- ps_johi %>%
+  subset_taxa(PWY == "UNINTEGRATED")
+# What percentage each ps are accounting for in Ethiopia
+round(100*sum(sample_sums(ps_johi_filt))/15, digits = 2) # 5.97
+round(100*sum(sample_sums(ps_unmapped))/15, digits = 2) # 24.46
+round(100*sum(sample_sums(ps_unint))/15, digits = 2) # 69.57
+
+# Prevalence of annotated pwy in Ethiopia
+ps_johi3 <- tax_glom(ps_johi_filt, "PWY", NArm = FALSE)
+prevdf_johi3 = apply(X= otu_table(ps_johi3),
+               MARGIN = ifelse(taxa_are_rows(ps_johi3),
+              yes =1, no =2), FUN = function(x){sum(x>0)})
+prevdf_johi3 = data.frame(Prevalence = prevdf_johi3,
+                        TotalAbundance = taxa_sums(ps_johi3),
+                        PercentagePrev = 100*prevdf_johi3/15,
+                        MeanAbundance = taxa_sums(ps_johi3)/15,
+                        tax_table(ps_johi3))
+length(which(prevdf_johi3$PercentagePrev == 100)) # 268 pathways prevalent 100% in Ethiopia
+# Pwy unique in Ethiopia
+prevdf_uniqueEth <- prevdf_johi3 %>%
+  dplyr::filter(PWY %in% tax_table(ps_NOTother)[,4])
+#PWY prevalence for all countries
+ps_sc3 <- tax_glom(ps_pwy_filt, "PWY", NArm = FALSE)
+prevdf_sc3 = apply(X= otu_table(ps_sc3),
+               MARGIN = ifelse(taxa_are_rows(ps_sc3),
+              yes =1, no =2), FUN = function(x){sum(x>0)})
+prevdf_sc3 = data.frame(Prevalence = prevdf_sc3,
+                        TotalAbundance = taxa_sums(ps_sc3),
+                        PercentagePrev = 100*prevdf_sc3/102,
+                        MeanAbundance = taxa_sums(ps_sc3)/102,
+                        tax_table(ps_sc3))
+write.csv(prevdf_sc3, "PWY_prevalence.csv")
+# Prevalence of pwy not in Ethiopia
+prevdf_uniqueOther <- prevdf_sc3 %>%
+  dplyr::filter(PWY %in% tax_table(ps_NOTjohi)[,4])
+```
+Superclass 1
+```{r}
+ps_sc1 <- tax_glom(ps_pwy_filt, "Superclass1", NArm = FALSE)
+ps_pwy_melt <- psmelt(ps_sc1)
+# Clustering at Superclass1 level
+## Superclass1 agglomeration 
+ps_hm1 <- tax_glom(ps_pwy_filt, "Superclass1")
+OTUhm1 = as.data.frame(otu_table(ps_hm1))
+TAXhm1 = as.data.frame(tax_table(ps_hm1))
+METAhm1 = as.matrix(sample_data(ps_hm1))
+reads_sc1 <-cbind(TAXhm1, OTUhm1)
+reads_sc1 <-reads_sc1[, -c(2,3,4,5)]
+rownames(reads_sc1) <- reads_sc1[,1]
+reads_sc1 <- reads_sc1[,-1]
+reads_sc1 <- as.matrix(reads_sc1)
+pal_all <- palbrew_all[16:27]
+pal_vanblo <- palbrew_all[c(69,66,67,68)]
+# Heatmap annotations
+column_hm1 = HeatmapAnnotation(ls = METAhm1[,8], ctry = METAhm1[,5],
+                              col = list(ls=c("Traditional" = pal_vanblo[3],
+                                              "Ethiopian" = pal_vanblo[1],
+                                              "Transitional" = pal_vanblo[4],
+                                              "Industrial" = pal_vanblo[2]),
+                                         ctry = c("Tanzania" = pal_all[1],
+                                                  "Ethiopia" = pal_all[5],
+                                                  "USA" = pal_all[7],
+                                                  "Peru_tradi" = pal_all[3],
+                                                  "El Salvador" = pal_all[9],
+                                                  "Zimbabwe" = pal_all[11],
+                                                  "Peru_transi"=pal_all[12])),
+                              annotation_label = c("Lifestyle", "Country"))
+pdf("Superclass1_Unclust_heatmap.pdf", width = 12)
+Heatmap(reads_sc1,
+        col = RColorBrewer::brewer.pal(9,"RdYlGn"),
+        row_title = "Superclass2", 
+        clustering_distance_rows = "euclidean", clustering_method_rows = "ward.D",
+        top_annotation = column_hm1,cluster_columns = FALSE,
+        show_column_names = TRUE, row_names_side = "left",
+        row_names_max_width = max_text_width(rownames(reads_sc1)),
+        column_title = "Heatmap of the superclass 1 pathways (not clustered samples)")
+dev.off()
+
+prevdf_sc1 = apply(X= otu_table(ps_sc1),
+               MARGIN = ifelse(taxa_are_rows(ps_sc1),
+              yes =1, no =2), FUN = function(x){sum(x>0)})
+prevdf_sc1 = data.frame(Prevalence = prevdf_sc1,
+                        TotalAbundance = taxa_sums(ps_sc1),
+                        PercentagePrev = 100*prevdf_sc1/102,
+                        tax_table(ps_sc1))
+rownames(prevdf_sc1) <- make.unique(prevdf_sc1$Superclass1)
+sc1_per <- ps_pwy_melt  %>%
+  group_by(Country,Superclass1) %>%
+  summarise(Sum_abun = 100*mean(Abundance),
+            SD= sd(Abundance)) %>%
+  filter(Country == "Ethiopia")
+write.csv(sc1_per, "SC1_percentage.csv")
+```
+Superclass 2
+```{r}
+ps_sc2 <- tax_glom(ps_pwy_filt, "Superclass2", NArm = FALSE)
+ps_sc2_melt <- psmelt(ps_sc2)
+# Clustering at Superclass2 level
+ps_hm2 <- tax_glom(ps_pwy_filt, "Superclass2")
+OTUhm2 = as.data.frame(otu_table(ps_hm2))
+TAXhm2 = as.data.frame(tax_table(ps_hm2))
+METAhm2 = as.matrix(sample_data(ps_hm2))
+reads_sc2 <-cbind(TAXhm2, OTUhm2)
+reads_sc2 <-reads_sc2[, -c(1,3,4,5)]
+reads_sc2[, 1]<-make.unique(reads_sc2[, 1]) # Now X unique species
+rownames(reads_sc2) <- reads_sc2[,1] #assign rownames as species/family/phylum names
+reads_sc2 <- reads_sc2[,-1] # remove column with names
+reads_sc2 <- as.matrix(reads_sc2)
+pal_all <- palbrew_all[16:27]
+# Heatmap annotations
+column_hm2 = HeatmapAnnotation(ls = METAhm2[,8], ctry = METAhm2[,5],
+                              col = list(ls=c("Traditional" = pal_vanblo[3],
+                                              "Ethiopian" = pal_vanblo[1],
+                                              "Transitional" = pal_vanblo[4],
+                                              "Industrial" = pal_vanblo[2]),
+                                         ctry = c("Tanzania" = pal_all[1],
+                                                  "Ethiopia" = pal_all[5],
+                                                  "USA" = pal_all[7],
+                                                  "Peru_tradi" = pal_all[3],
+                                                  "El Salvador" = pal_all[9],
+                                                  "Zimbabwe" = pal_all[11],
+                                                  "Peru_transi"=pal_all[12])),
+                              annotation_label = c("Lifestyle", "Country"))
+
+pdf("Superclass2_Unclustered_heatmap.pdf", width = 12)
+Heatmap(reads_sc2,
+        col = RColorBrewer::brewer.pal(9,"RdYlGn"),
+        row_title = "Superclass2", 
+        clustering_distance_rows = "euclidean", clustering_method_rows = "ward.D",
+        top_annotation = column_hm2, cluster_columns = FALSE,
+        show_column_names = FALSE, row_names_side = "left", row_names_max_width = max_text_width(rownames(reads_sc2)),
+        column_title = "Heatmap of the superclass 2 pathways (not clustered samples)")
+dev.off()
+
+prevdf_sc2 = apply(X= otu_table(ps_sc2),
+               MARGIN = ifelse(taxa_are_rows(ps_sc2),
+              yes =1, no =2), FUN = function(x){sum(x>0)})
+prevdf_sc2 = data.frame(Prevalence = prevdf_sc2,
+                        TotalAbundance = taxa_sums(ps_sc2),
+                        PercentagePrev = 100*prevdf_sc2/102,
+                        tax_table(ps_sc2))
+rownames(prevdf_sc2) <- make.unique(prevdf_sc2$Superclass2)
+sc2_per <- ps_sc2_melt %>%
+  group_by(Country,Superclass1, Superclass2) %>%
+  summarise(Sum_abun = 100*mean(Abundance), 
+            SD = sd(Abundance)) %>%
+  filter(Country == "Ethiopia")
+write.csv(sc2_per, "SC2_percentage.csv")
+```
+Heatmap pathways
+```{r}
+ps_hm <- tax_glom(ps_pwy_filt, "PWY")
+OTUhm = as.data.frame(otu_table(ps_hm))
+TAXhm = as.data.frame(tax_table(ps_hm))
+METAhm = as.matrix(sample_data(ps_hm))
+reads <-cbind(TAXhm, OTUhm)
+reads <-reads[, -c(1,2,3,5)]
+reads[, 1]<-make.unique(reads[, 1]) 
+rownames(reads) <- reads[,1] 
+reads <- reads[,-1] 
+reads <- as.matrix(reads)
+
+# Clusters for samples
+treads <- t(reads)
+hc=hclust(dist(treads),method="ward.D")
+plot(hc, hang=-1)
+dend=as.dendrogram(hc)
+CH <- vector("numeric", 9L)
+for (k in 2:10){
+      clrs=cutree(hc,k=k)
+      CH[k-1] = intCriteria(as.matrix(treads),clrs,"all")$calinski_harabasz
+    }
+ggplot() +
+        geom_point(aes(x=c(2:10),y=CH)) +
+        geom_line(aes(x=c(2:10),y=CH)) +
+        xlab("Number of clusters (k)") +
+        ylab("Calinski-Harabasz index") +
+        theme_minimal()
+nClrs=2
+clrs=cutree(hc,k=nClrs)
+clrs <- as.data.frame(clrs)
+clrs <- data.frame(Cluster = ifelse(test = clrs == 1, yes = "Cluster 1",no =  "Cluster 2"))
+METAhm <- cbind(METAhm, clrs)
+colnames(METAhm)[10] <- "Cluster"
+
+# Cluster for pathways
+# 3 cluster for the pathways
+hc_pwy=hclust(dist(reads),method="ward.D")
+plot(hc_pwy, hang=-1)
+dend_pwy=as.dendrogram(hc_pwy)
+CH_pwy <- vector("numeric", 9L)
+for (k in 2:10){
+      clrs_pwy=cutree(hc_pwy,k=k)
+      CH_pwy[k-1] = intCriteria(as.matrix(reads),clrs_pwy,"all")$calinski_harabasz
+    }
+ggplot() +
+        geom_point(aes(x=c(2:10),y=CH_pwy)) +
+        geom_line(aes(x=c(2:10),y=CH_pwy)) +
+        xlab("Number of clusters (k)") +
+        ylab("Calinski-Harabasz index") +
+        theme_minimal()
+nClrs_pwy=3
+clrs_pwy=cutree(hc_pwy,k=nClrs_pwy)
+clrs_pwy <- as.data.frame(clrs_pwy)
+clrs_pwy <- data.frame(Cluster = ifelse(test = clrs_pwy == 1, yes = "Cluster 1",no = ifelse(test = clrs_pwy==2, yes = "Cluster 2", no = "Cluster 3")))
+TAXhm <- cbind(TAXhm, clrs_pwy)
+
+pal_all <- palbrew_all[16:27]
+pal_sc1 <- palbrew_all[16:26]
+pal_cons <- palbrew_all[39:43]
+pal_abun <- palbrew_all[46:49]
+pal_clust <- palbrew_all[c(71,66,69)]
+library(ComplexHeatmap)
+# Heatmap annotations
+row_hm = rowAnnotation(ls = METAhm[,8], ctry = METAhm[,5],
+                              col = list(ls=c("Traditional" = pal_vanblo[3],
+                                              "Ethiopian" = pal_vanblo[1],
+                                              "Transitional" = pal_vanblo[4],
+                                              "Industrial" = pal_vanblo[2]),
+                                         ctry = c("Tanzania" = pal_all[1],
+                                                  "Ethiopia" = pal_all[5],
+                                                  "USA" = pal_all[7],
+                                                  "Peru_tradi" = pal_all[3],
+                                                  "El Salvador" = pal_all[9],
+                                                  "Zimbabwe" = pal_all[11],
+                                                  "Peru_transi" =pal_all[12])),
+                              annotation_label = c("Lifestyle", "Country"))
+TAXhm_annot <- as.matrix(TAXhm[,1:4])
+TAXhm_annot <- as.data.frame(TAXhm_annot) %>%
+  mutate(Prevalence = prevdf_sc3$PercentagePrev)
+TAXhm_annot <- TAXhm_annot %>%
+  mutate(PrevLab = "")
+TAXhm_annot$PrevLab[TAXhm_annot$Prevalence == 100] <- "Conserved (100%)"
+TAXhm_annot$PrevLab[TAXhm_annot$Prevalence >= 80 & TAXhm_annot$Prevalence < 100] <- "Conserved (>80%)"
+TAXhm_annot$PrevLab[TAXhm_annot$Prevalence < 80] <- "Not conserved (<80%)"
+TAXhm_annot <- as.matrix(TAXhm_annot)
+column_hm = HeatmapAnnotation(sc1 = TAXhm_annot[,1], cons = TAXhm_annot[,6], 
+                              col = list(sc1=c("Degradation/Utilization/Assimilation" = pal_sc1[1],
+                                              "Biosynthesis" = pal_sc1[9],
+                                              "Superpathways" = pal_sc1[2],
+                                              "Generation of Precursor Metabolites and Energy" = pal_sc1[4],
+                                              "Macromolecule Modification" = pal_sc1[6],
+                                              "Bioluminescence" = pal_sc1[7],
+                                              "Activation/Inactivation/Interconversion" = pal_sc1[10]),
+                                         cons = c("Conserved (100%)" = pal_cons[1],
+                                                  "Conserved (>80%)"=pal_cons[2],
+                                                  "Not conserved (<80%)" = pal_cons[5])),
+                              annotation_label = c("Superclass1", "Prevalence"))
+pdf("HM_PWY_ms.pdf", width = 60, height = 20)
+Heatmap(t(reads), name = "PWY relative abundance",
+        col = RColorBrewer::brewer.pal(9,"RdYlGn"),
+        column_title = "Pathways", left_annotation = row_hm,
+        clustering_distance_rows = "euclidean", clustering_method_rows = "ward.D",
+        top_annotation = column_hm,
+        clustering_distance_columns = "euclidean", clustering_method_columns = "ward.D",
+        column_split = 3,
+        row_split = 2, row_title = "Samples",
+        show_column_names = TRUE, show_row_dend = FALSE, show_row_names = FALSE, show_column_dend = FALSE)
+dev.off()
+```
+Chi-test on repartition of the samples in cluster 1 or 2 
+```{r}
+ps_chi <- ps_hm
+sample_data(ps_chi) <- sample_data(METAhm)
+df_country <- as.data.frame(unique(sample_data(ps_chi)[,5]))
+df_country <- as.matrix(df_country)
+for(i in 1:7){
+  sample_data(ps_chi)$nSample[sample_data(ps_chi)$Country == df_country[i,]] <- length(which(sample_data(ps_chi)$Country == df_country[i,])==TRUE)
+}
+# Metadata table
+md_hm = as(sample_data(ps_chi), "matrix")
+md_hm <- as.data.frame(md_hm)
+md_chi <- md_hm %>%
+  group_by(Country) %>%
+  mutate(relCount = 100/as.numeric(nSample)) %>%
+  group_by(Country,Lifestyle,Cluster) %>%
+  summarise(Clust_per = sum(relCount))
+
+# Countries
+chi.sq_countries = table(md_hm$Country, md_hm$Cluster)
+chi.sq_countries
+chisq_cou <- matrix(ncol = 7, nrow = 7)
+colnames(chisq_cou) <- rownames(chi.sq_countries)
+rownames(chisq_cou) <- rownames(chi.sq_countries)
+for (i in 1:7){
+  for (j in 1:7) {
+     chisq_cou[i,j] <- chisq.test(chi.sq_countries[c(i,j),])$p.value
+      j= j+1
+     }
+  
+  i = i+1
+}
+# Save repartition and tests
+write.csv(chi.sq_countries, "Country_clrs.csv")
+write.csv(chisq_cou, "Chitest_country.csv")
+```
+What pathways are enriched in the two different cluster
+Superclass 2
+```{r}
+ps_chi_sc2 <- tax_glom(ps_chi, "Superclass2")
+cluster_sc2 <- psmelt(ps_chi_sc2)
+wil_test_cluster_sc2 <- cluster_sc2 %>%
+  group_by(Superclass2) %>%
+  mutate(pval = wilcox.test(Abundance ~ Cluster, paired = F)$p.value)
+wil_test_cluster_sc2['p.value_bonf'] <- wil_test_cluster_sc2$pval * length(unique(wil_test_cluster_sc2$Superclass2))
+wil_test_cluster_sc2 <- wil_test_cluster_sc2 %>%
+  group_by(Superclass2, pval, p.value_bonf) %>%
+  summarise()
+wil_test_cluster_sc2_signif <- wil_test_cluster_sc2 %>%
+  dplyr::filter(p.value_bonf< 0.05)
+label_clust_sc2 <- create.label(meta = sample_data(ps_chi_sc2) , label = "Cluster", case = 'Cluster 1')
+sc_pwy.obj_sc2 <- siamcat(feat = otu_table(ps_chi_sc2), label = label_clust_sc2,  meta = sample_data(ps_chi_sc2))
+sc_pwy.obj_sc2 <- filter.features(sc_pwy.obj_sc2, filter.method = 'prevalence', cutoff = 0.0)
+show(sc_pwy.obj_sc2)
+sc_pwy.obj_sc2 <- check.associations(sc_pwy.obj_sc2, alpha = 0.05, fn.plot = 'association_plots_clustersSC2.pdf')
+as.data.frame(rownames(associations(sc_pwy.obj_sc2))[which(associations(sc_pwy.obj_sc2)[, 10] < 0.05 & associations(sc_pwy.obj_sc2)[, 1] > 0)])
+as.data.frame(rownames(associations(sc_pwy.obj_sc2))[which(associations(sc_pwy.obj_sc2)[, 10] < 0.05 & associations(sc_pwy.obj_sc2)[, 1] < 0 )])
+sc2_signif <- as.data.frame(tax_table(ps_chi_sc2))
+sc2_signif <- sc2_signif[which(rownames(sc2_signif)%in%rownames(associations(sc_pwy.obj_sc2))[which(associations(sc_pwy.obj_sc2)[, 10] < 0.05 & associations(sc_pwy.obj_sc2)[, 1] < 0 )]),]
+pdf("aa_biosynthesis_clstr.pdf", width = 5, height = 5)
+cluster_sc2 %>% 
+  dplyr::filter(Superclass2 == "Amino Acid Biosynthesis") %>%
+  ggplot(aes(x = Cluster, y= Abundance)) +
+  geom_boxplot(aes(fill=Cluster)) +
+  geom_point() +
+  scale_fill_manual(values = pal_all[c(8,4)]) +
+  theme_bw()+
+  ggtitle("Amino Acid Biosynthesis")
+dev.off()
+```
+Pathways
+```{r}
+# Which pathways have a significant different abundance between the two clusters?
+cluster_pwy <- psmelt(ps_chi)
+wil_test_cluster <- cluster_pwy %>%
+  group_by(PWY) %>%
+  mutate(pval = wilcox.test(Abundance ~ Cluster, paired = F)$p.value)
+wil_test_cluster['p.value_bonf'] <- wil_test_cluster$pval * length(unique(wil_test_cluster$PWY))
+wiltest_pwy_clust <- wil_test_cluster %>%
+  group_by(PWY, pval, p.value_bonf) %>%
+  summarise()
+write.csv(wiltest_pwy_clust, "WilcoxonTest_PWY_Clusters.csv")
+
+signif_pwy <- unique(wil_test_cluster[which(wil_test_cluster$p.value_bonf < 0.05), "PWY"])
+unisignif_pwy <- unique(wil_test_cluster[which(wil_test_cluster$p.value_bonf > 0.05), "PWY"])
+wiltest_clst_sign <- prevdf_sc3 %>%
+  filter(PWY %in% signif_pwy$PWY)
+wiltest_clst_unsign <- prevdf_sc3 %>%
+  filter(PWY %in% unisignif_pwy$PWY)
+
+# fold change of significant pathways using siamcat: which pathways are enriched in which cluster
+ps_sign <- subset_taxa(ps_chi, PWY %in% signif_pwy$PWY)
+label_clust <- create.label(meta = sample_data(ps_sign) , label = "Cluster", case = 'Cluster 1')
+sc_pwy.obj <- siamcat(feat = otu_table(ps_sign),
+                  label = label_clust,
+                  meta = sample_data(ps_sign))
+sc_pwy.obj <- filter.features(sc_pwy.obj,
+                          filter.method = 'prevalence',
+                          cutoff = 0.0)
+sc_pwy.obj <- check.associations(sc_pwy.obj, alpha = 0.05, fn.plot = 'association_plots_clustersPWY.pdf')
+cluster1 <- as.data.frame(rownames(associations(sc_pwy.obj))[which(associations(sc_pwy.obj)[, 10] < 0.05 & associations(sc_pwy.obj)[, 1] > 0)])
+names(cluster1)[1] <- "PWY"
+clust1_sign <- prevdf_sc3 %>%
+  filter(PWY %in% cluster1$PWY)
+clust1_sign <- cbind(clust1_sign, associations(sc_pwy.obj)[which(associations(sc_pwy.obj)[, 10] < 0.05 & associations(sc_pwy.obj)[, 1] > 0),])
+cluster2 <- as.data.frame(rownames(associations(sc_pwy.obj))[which(associations(sc_pwy.obj)[, 10] < 0.05 & associations(sc_pwy.obj)[, 1] < 0 )])
+names(cluster2)[1] <- "PWY"
+clust2_sign <- prevdf_sc3 %>%
+  filter(PWY %in% cluster2$PWY)
+clust2_sign <- cbind(clust2_sign, associations(sc_pwy.obj)[which(associations(sc_pwy.obj)[, 10] < 0.05 & associations(sc_pwy.obj)[, 1] < 0),])
+write.csv(associations(sc_pwy.obj), "SC_FoldChange_PWY_Clusters.csv")
+
+# MaAsLin2 on clusters
+#Data/feature file:
+data <- pathways_relab
+data <- data %>%
+  filter(PWY %in% signif_pwy$PWY)
+colnames(data) <- str_remove(colnames(data), "_Abundance")
+rownames(data) <- data$PWY
+data <- data[,-c(1,2)]
+data <- t(data)
+#Metadata file
+metadata_hm <- md_hm
+metadata_hm$Cluster[which(metadata_hm$Cluster=="Cluster 1")] <- "Cluster1"
+metadata_hm$Cluster[which(metadata_hm$Cluster=="Cluster 2")] <- "Cluster2"
+fit_data = Maaslin2(
+    input_data = data, 
+    input_metadata = metadata_hm, 
+    min_prevalence = 0,
+    normalization = "NONE",
+    output = "Clusters", 
+    fixed_effects = "Cluster",
+    reference = c("Cluster,Cluster2")
+   )
+```
+Plot pathways of interest
+Carbohydrate degradation
+```{r}
+pal_clstr <- pal_all[c(1,2)]
+
+pdf("lactosecat_clstr.pdf", width = 5, height = 5)
+cluster_pwy %>% 
+  dplyr::filter(PWY == "LACTOSECAT-PWY") %>%
+  ggplot(aes(x = Cluster, y= Abundance)) +
+  geom_boxplot(aes(fill=Cluster)) +
+  geom_point() +
+  scale_fill_manual(values = pal_all[c(8,4)]) +
+  theme_bw() +
+  ggtitle("LACTOSECAT-PWY")
+dev.off()
+pdf("pwy7456_clstr.pdf", width = 5, height = 5)
+cluster_pwy %>% 
+  dplyr::filter(PWY == "PWY-7456") %>%
+  ggplot(aes(x = Cluster, y= Abundance)) +
+  geom_boxplot(aes(fill=Cluster)) +
+  geom_point() +
+  scale_fill_manual(values = pal_all[c(8,4)]) +
+  theme_bw()+
+  ggtitle("PWY-7456")
+dev.off()
+pdf("pwy6317_clstr.pdf", width = 5, height = 5)
+cluster_pwy %>% 
+  dplyr::filter(PWY == "PWY-6317") %>%
+  ggplot(aes(x = Cluster, y= Abundance)) +
+  geom_boxplot(aes(fill=Cluster)) +
+  geom_point() +
+  scale_fill_manual(values = pal_all[c(8,4)]) +
+  theme_bw()+
+  ggtitle("PWY-6317")
+dev.off()
+pdf("DARABCATK12_clstr.pdf", width = 5, height = 5)
+cluster_pwy %>% 
+  dplyr::filter(PWY == "DARABCATK12-PWY") %>%
+  ggplot(aes(x = Cluster, y= Abundance)) +
+  geom_boxplot(aes(fill=Cluster)) +
+  geom_point() +
+  scale_fill_manual(values = pal_all[c(8,4)]) +
+  theme_bw()+
+  ggtitle("DARABCATK12-PWY")
+dev.off()
+pdf("pwy6527_clstr.pdf", width = 5, height = 5)
+cluster_pwy %>% 
+  dplyr::filter(PWY == "PWY-6527") %>%
+  ggplot(aes(x = Cluster, y= Abundance)) +
+  geom_boxplot(aes(fill=Cluster)) +
+  geom_point() +
+  scale_fill_manual(values = pal_all[c(8,4)]) +
+  theme_bw()+
+  ggtitle("PWY-6527")
+dev.off()
+pdf("pwy6731_clstr.pdf", width = 5, height = 5)
+cluster_pwy %>% 
+  dplyr::filter(PWY == "PWY-6731") %>%
+  ggplot(aes(x = Cluster, y= Abundance)) +
+  geom_boxplot(aes(fill=Cluster)) +
+  geom_point() +
+  scale_fill_manual(values = pal_all[c(8,4)]) +
+  theme_bw()+
+  ggtitle("PWY-6731")
+dev.off()
+```
+Amino Acids
+```{r}
+# Enriched
+pdf("pwySER_GLYSYN_clstr.pdf", width = 5, height = 5)
+cluster_pwy %>% 
+  dplyr::filter(PWY == "SER-GLYSYN-PWY") %>%
+  ggplot(aes(x = Cluster, y= Abundance)) +
+  geom_boxplot(aes(fill=Cluster)) +
+  geom_point() +
+  scale_fill_manual(values = pal_all[c(8,4)]) +
+  theme_bw()+
+  ggtitle("SER-GLYSYN-PWY")
+dev.off()
+pdf("pwyTHR_clstr.pdf", width = 5, height = 5)
+cluster_pwy %>% 
+  dplyr::filter(PWY == "THRESYN-PWY") %>%
+  ggplot(aes(x = Cluster, y= Abundance)) +
+  geom_boxplot(aes(fill=Cluster)) +
+  geom_point() +
+  scale_fill_manual(values = pal_all[c(8,4)]) +
+  theme_bw()+
+  ggtitle("THRESYN-PWY")
+dev.off()
+pdf("pwycomplete_clstr.pdf", width = 5, height = 5)
+cluster_pwy %>% 
+  dplyr::filter(PWY == "COMPLETE-ARO-PWY") %>%
+  ggplot(aes(x = Cluster, y= Abundance)) +
+  geom_boxplot(aes(fill=Cluster)) +
+  geom_point() +
+  scale_fill_manual(values = pal_all[c(8,4)]) +
+  theme_bw()+
+  ggtitle("COMPLETE-ARO-PWY")
+dev.off()
+
+## Not enriched
+pdf("pwyValSyn_clstr.pdf", width = 5, height = 5)
+cluster_pwy %>% 
+  dplyr::filter(PWY == "VALSYN-PWY") %>%
+  ggplot(aes(x = Cluster, y= Abundance)) +
+  geom_boxplot(aes(fill=Cluster)) +
+  geom_point() +
+  scale_fill_manual(values = pal_all[c(8,4)]) +
+  theme_bw()+
+  ggtitle("VALSYN-PWY")
+dev.off()
+pdf("pwyBranched_clstr.pdf", width = 5, height = 5)
+cluster_pwy %>% 
+  dplyr::filter(PWY == "BRANCHED-CHAIN-AA-SYN-PWY") %>%
+  ggplot(aes(x = Cluster, y= Abundance)) +
+  geom_boxplot(aes(fill=Cluster)) +
+  geom_point() +
+  scale_fill_manual(values = pal_all[c(8,4)]) +
+  theme_bw()+
+  ggtitle("BRANCHED-CHAIN-AA-SYN-PWY")
+dev.off()
+pdf("pwyHist_clstr.pdf", width = 5, height = 5)
+cluster_pwy %>% 
+  dplyr::filter(PWY == "HISTSYN-PWY") %>%
+  ggplot(aes(x = Cluster, y= Abundance)) +
+  geom_boxplot(aes(fill=Cluster)) +
+  geom_point() +
+  scale_fill_manual(values = pal_all[c(8,4)]) +
+  theme_bw()+
+  ggtitle("HISTSYN-PWY")
+dev.off()
+
+## Mixed results
+pdf("pwyLysineSign_clstr.pdf", width = 5, height = 5)
+cluster_pwy %>% 
+  dplyr::filter(PWY == "PWY-2942") %>%
+  ggplot(aes(x = Cluster, y= Abundance)) +
+  geom_boxplot(aes(fill=Cluster)) +
+  geom_point() +
+  scale_fill_manual(values = pal_all[c(8,4)]) +
+  theme_bw()+
+  ggtitle("PWY-2942")
+dev.off()
+pdf("pwyLysinUnsign_clstr.pdf", width = 5, height = 5)
+cluster_pwy %>% 
+  dplyr::filter(PWY == "PWY-5097") %>%
+  ggplot(aes(x = Cluster, y= Abundance)) +
+  geom_boxplot(aes(fill=Cluster)) +
+  geom_point() +
+  scale_fill_manual(values = pal_all[c(8,4)]) +
+  theme_bw()+
+  ggtitle("PWY-5097")
+dev.off()
+pdf("pwymeth_sign_clstr.pdf", width = 5, height = 5)
+cluster_pwy %>% 
+  dplyr::filter(PWY == "HSERMETANA-PWY") %>%
+  ggplot(aes(x = Cluster, y= Abundance)) +
+  geom_boxplot(aes(fill=Cluster)) +
+  geom_point() +
+  scale_fill_manual(values = pal_all[c(8,4)]) +
+  theme_bw()+
+  ggtitle("HSERMETANA-PWY")
+dev.off()
+pdf("pwymeth_unsig_clstr.pdf", width = 5, height = 5)
+cluster_pwy %>% 
+  dplyr::filter(PWY == "PWY-7977") %>%
+  ggplot(aes(x = Cluster, y= Abundance)) +
+  geom_boxplot(aes(fill=Cluster)) +
+  geom_point() +
+  scale_fill_manual(values = pal_all[c(8,4)]) +
+  theme_bw()+
+  ggtitle("PWY-7977")
+dev.off()
+
+# Amino acid biosynthesis
+# 27 pathways significantly different in the two clusters
+# 20 pathways not significantly different in the two clusters
+
+aa_signi <- wiltest_clst_sign %>%
+  dplyr::filter(Superclass2 == "Amino Acid Biosynthesis")
+aa_unsigni <- wiltest_clst_unsign %>%
+  dplyr::filter(Superclass2 == "Amino Acid Biosynthesis")
+
+aa_all <- rbind(aa_signi, aa_unsigni)
+
+
+ps_chi_aa <- psmelt(ps_chi)
+wil_test_cluster_aa <- ps_chi_aa %>%
+  dplyr::filter(Superclass2=="Amino Acid Biosynthesis") %>%
+  group_by(PWY) %>%
+  mutate(pval = wilcox.test(Abundance ~ Cluster, paired = F)$p.value)
+wil_test_cluster_aa['p.value_bonf'] <- wil_test_cluster_aa$pval * n_distinct(wil_test_cluster_aa$PWY)
+wil_test_cluster_aa <- wil_test_cluster_aa %>%
+  group_by(PWY, pval, p.value_bonf) %>%
+  summarise()
+```         
+Prevalence of species in pathways
+```{r}
+path_ai <- merge(path_meta, path_abun_split, by.x = "PWY", by.y = "PWY", all.x = TRUE)
+# Species prevalence: in how many pathways is each species is involved in
+species_prevalence <- path_ai
+colnames(species_prevalence) <- str_remove(colnames(species_prevalence), "_Abundance")
+species_prevalence <- species_prevalence[which(species_prevalence[,7]!=""),]
+species_prevalence <- pivot_longer(species_prevalence, cols = 10:ncol(species_prevalence) ,
+                                   names_to = "SampleID", values_to = "Abundance")
+species_prevalence <- merge(md_all, species_prevalence, by.x = "fastqID", by.y = "SampleID")
+species_prevalence <- species_prevalence %>%
+  dplyr::filter(Genus != "unclassified")
+species_prevalence <- species_prevalence %>%
+  dplyr::filter(Abundance > 0)
+species_prevalence <- species_prevalence %>%
+  dplyr::filter(PWY != "UNINTEGRATED")
+# Grouping per lifestyle, country and samples
+species_prevalence_grouped <- species_prevalence %>%
+  group_by(Lifestyle, Country, SampleID,Genus, Species) %>%
+  summarise(SpeciesPrev = n_distinct(PWY))
+species_prevalence_grouped$SpeciesPrev <- log10(species_prevalence_grouped$SpeciesPrev)
+pdf("Species_prevalence_log.pdf", width = 15, height = 20)
+ggplot(species_prevalence_grouped, aes(x=Country, y = SpeciesPrev, col =Country)) +
+  geom_boxplot() +
+  geom_point() +
+  facet_wrap(Species~., ncol = 7) +
+  scale_color_brewer(palette = "Paired") +
+  theme_bw() +
+  theme(axis.text.x =  element_text(angle = 90, vjust = 0.5)) +
+  theme(strip.text = element_text(face = "italic"))
+dev.off()
+
+# Which species are in all community?
+common_sp_prev <- species_prevalence_grouped %>%
+  group_by(Genus, Species) %>%
+  summarise(NumCountry = n_distinct(Country),
+            MeanSpeciesPrev = mean(SpeciesPrev)) %>%
+  filter(NumCountry == 7) %>%
+  arrange(desc(MeanSpeciesPrev))
+n_distinct(common_sp_prev$Species) #20
+`%notin%` <- Negate(`%in%`)
+# Which species are not in Ethiopia 
+other_sp_prev_unfilt <- species_prevalence_grouped %>%
+  filter(Country != "Ethiopia")
+eth_sp_prev <- species_prevalence_grouped %>%
+  filter(Country == "Ethiopia")
+other_sp_prev <- other_sp_prev_unfilt[which(other_sp_prev_unfilt$Species %notin% eth_sp_prev$Species),]
+# Which are unique to Ethiopia
+eth_sp_prev <- eth_sp_prev[which(eth_sp_prev$Species %notin% other_sp_prev_unfilt$Species),]
+```
+
+#C. RGI
+```{r}
+# Loading allele map
+allele_map <- read_excel("Tables/Additional\ file\ 3.xlsx", sheet = "RGI_table")
+colnames(allele_map) <- str_replace_all(colnames(allele_map), " ", "_")
+#loading number of total reads per samples
+total_reads <- read.delim("Tables/RGI/Merged_total_reads.txt", sep = "\t", header = FALSE)
+total_reads <- total_reads[,-2]
+total_reads <- as.data.frame(total_reads)
+names(total_reads)[1] <- "Singlecolumn"
+# Creating two columns (SampleID, Total count)
+total_reads <- total_reads %>%
+  group_by(grp = str_c('Column', rep(1:2, length.out = n()))) %>%
+  mutate(rn = row_number()) %>%
+  ungroup %>%
+  pivot_wider(names_from = grp, values_from = Singlecolumn) %>%
+  select(-rn)
+colnames(total_reads) <- c("fastqID", "Total_reads")
+total_reads <- as.data.frame(total_reads)
+total_reads <- total_reads %>%
+  mutate(Reads_count="")
+total_reads[,2:3] <- as.data.frame(str_split_fixed(total_reads[,2], "\\:       ", 2))
+total_reads <- total_reads[,-2]
+names(total_reads)[2] <- "Total_reads"
+total_reads[,2] <- as.numeric(total_reads[,2])
+# Adding total reads in metadata
+md_reads <- merge(total_reads, md_all, by="fastqID")
+# Merging allele_map and reads info
+allele_mapInfo <- merge(md_reads, allele_map, by.x = "fastqID", by.y = "SampleID")
+# Removing gene with least than 100 mapped reads
+allele_map_sub <- allele_mapInfo %>%
+  dplyr::filter(All_Mapped_Reads >= 100 & Percent_Coverage >= 80)
+#RPKM
+allele_map_sub <- allele_map_sub %>%
+  group_by(SampleID) %>%
+  mutate(RPKM = (All_Mapped_Reads/(sum(All_Mapped_Reads)/10^6))/(Reference_Length/1000)) %>%
+  ungroup()
+```
+Pie chart Ethiopia
+```{r}
+# Description of Ethiopia
+allele_map_eth <- allele_map_sub %>%
+  dplyr::filter(Country == "Ethiopia")
+allele_map_eth <- allele_map_eth[,c(3,6,12,19,28,29,30,35)]
+length(unique(allele_map_eth$ARO_Term)) # 166 ARO term
+aro_per_sample <- allele_map_eth %>%
+  group_by(SampleID) %>%
+  summarise(AROperSample = n_distinct(ARO_Term))
+aro_most_rpkm <- allele_map_eth %>%
+  group_by(ARO_Term) %>%
+  summarise(ARO_sum = sum(RPKM)) %>%
+  arrange(desc(ARO_sum))
+# ARO term ETHIOPIA
+top_aro_eth <- allele_map_eth %>%
+  dplyr::filter(ARO_Term %in% aro_most_rpkm$ARO_Term[1:11])
+other_aro_term <- allele_map_eth %>%
+  dplyr::filter(ARO_Term %in% aro_most_rpkm$ARO_Term[12:166]) %>%
+  group_by(SampleID) %>%
+  summarise(RPKM = sum(RPKM)) %>%
+  mutate(ARO_Term = "Others")
+aro_term_eth <- rbind(top_aro_eth[,c(1,8,3)], other_aro_term)
+aro_term_eth <- aro_term_eth %>%
+  group_by(ARO_Term) %>%
+  summarise(AROTermCount = sum(RPKM)) %>%
+  arrange(desc(AROTermCount)) %>% 
+  mutate(name=factor(ARO_Term, levels=ARO_Term))
+pdf("PieChart_AROTerm_Ethiopia.pdf")
+ggplot(aro_term_eth, aes(x="", y=AROTermCount, fill=name)) +
+  geom_bar(stat="identity", width=1, color="white") +
+  coord_polar("y", start=0) +
+  theme_void() +
+  scale_fill_brewer(palette = "Paired")
+dev.off()
+# Drug class ETHIOPIA
+dc_most_rpkm <- allele_map_eth %>%
+  separate_rows(Drug_Class, sep = "\\; ") %>%
+  filter(Drug_Class !='') %>%
+  group_by(Drug_Class) %>%
+  summarise(DrugClassCount = sum(RPKM)) %>%
+  arrange(desc(DrugClassCount))
+top_dc_eth <- allele_map_eth %>%
+  separate_rows(Drug_Class, sep = "\\; ") %>%
+  filter(Drug_Class !='') %>%
+  filter(Drug_Class %in% dc_most_rpkm$Drug_Class[1:11])
+other_dc_term <- allele_map_eth %>%
+  separate_rows(Drug_Class, sep = "\\; ") %>%
+  filter(Drug_Class !='') %>%
+  filter(Drug_Class %in% dc_most_rpkm$Drug_Class[12:29]) %>%
+  group_by(SampleID) %>%
+  summarise(RPKM = sum(RPKM)) %>%
+  mutate(Drug_Class = "Others")
+dc_eth <- rbind(top_dc_eth[,c(1,8,6)], other_dc_term)
+dc_eth <- dc_eth %>%
+  group_by(Drug_Class) %>%
+  summarise(DrugClassCount = sum(RPKM)) %>%
+  arrange(desc(DrugClassCount)) %>%
+  mutate(Drug_Class_ord=factor(Drug_Class, levels=Drug_Class))
+pdf("PieChart_DrugClass_Ethiopia.pdf")
+ggplot(dc_eth, aes(x="", y=DrugClassCount, fill=Drug_Class_ord)) +
+  geom_bar(stat="identity", width=1, color="white") +
+  coord_polar("y", start=0) +
+  theme_void() +
+  scale_fill_brewer(palette = "Paired")
+dev.off()
+# Resitance mechanism ETHIOPIA
+rm_most_rpkm <- allele_map_eth %>%
+  separate_rows(Resistance_Mechanism, sep = "\\; ") %>%
+  filter(Resistance_Mechanism !='') %>%
+  group_by(Resistance_Mechanism) %>%
+  summarise(RMCount = sum(RPKM)) %>%
+  arrange(desc(RMCount))%>%
+  mutate(RM_ord=factor(Resistance_Mechanism, levels=Resistance_Mechanism))
+pdf("PieChart_ResMech_Ethiopia.pdf")
+ggplot(rm_most_rpkm, aes(x="", y=RMCount, fill=RM_ord)) +
+  geom_bar(stat="identity", width=1, color="white") +
+  coord_polar("y", start=0) +
+  theme_void() +
+  scale_fill_brewer(palette = "Set2")
+dev.off()
+```
+Other countries
+Aro term
+```{r}
+aro_most_rpkm <- allele_map_eth %>%
+  group_by(ARO_Term) %>%
+  summarise(ARO_sum = sum(RPKM)) %>%
+  arrange(desc(ARO_sum))
+write.csv(aro_most_rpkm, "ARO_Ethiopia.csv")
+aro_most_rpkm_usa <- allele_map_sub %>%
+  filter(Country =="USA") %>%
+  group_by(ARO_Term) %>%
+  summarise(ARO_sum = sum(RPKM)) %>%
+  arrange(desc(ARO_sum))
+write.csv(aro_most_rpkm_usa, "ARO_usa.csv")
+aro_most_rpkm_tan <- allele_map_sub %>%
+  filter(Country =="Tanzania") %>%
+  group_by(ARO_Term) %>%
+  summarise(ARO_sum = sum(RPKM)) %>%
+  arrange(desc(ARO_sum))
+write.csv(aro_most_rpkm_tan, "ARO_Tanzania.csv")
+aro_most_rpkm_sal <- allele_map_sub %>%
+  filter(Country =="El Salvador") %>%
+  group_by(ARO_Term) %>%
+  summarise(ARO_sum = sum(RPKM)) %>%
+  arrange(desc(ARO_sum))
+write.csv(aro_most_rpkm_sal, "ARO_Salvador.csv")
+aro_most_rpkm_zim <- allele_map_sub %>%
+  filter(Country =="Zimbabwe") %>%
+  group_by(ARO_Term) %>%
+  summarise(ARO_sum = sum(RPKM)) %>%
+  arrange(desc(ARO_sum))
+write.csv(aro_most_rpkm_zim, "ARO_Zimbabwe.csv")
+aro_most_rpkm_ptrad <- allele_map_sub %>%
+  filter(Country =="Peru_tradi") %>%
+  group_by(ARO_Term) %>%
+  summarise(ARO_sum = sum(RPKM)) %>%
+  arrange(desc(ARO_sum))
+write.csv(aro_most_rpkm_ptrad, "ARO_Perutradi.csv")
+aro_most_rpkm_ptran <- allele_map_sub %>%
+  filter(Country =="Peru_transi") %>%
+  group_by(ARO_Term) %>%
+  summarise(ARO_sum = sum(RPKM)) %>%
+  arrange(desc(ARO_sum))
+write.csv(aro_most_rpkm_ptran, "ARO_Perutransi.csv")
+```
+Drug class
+```{r}
+# each drug class detected in each samples
+drug_class_eth <- allele_map_eth %>%
+  separate_rows(Drug_Class, sep = "\\; ") %>%
+  filter(Drug_Class !='') %>%
+  group_by(Country, Drug_Class) %>%
+  summarise(DrugClassCount = sum(RPKM)) %>%
+  arrange(desc(DrugClassCount))
+write.csv(drug_class_eth, "DrugClass_Ethiopia.csv")
+drug_class_usa <- allele_map_sub %>%
+  filter(Country == "USA") %>%
+  separate_rows(Drug_Class, sep = "\\; ") %>%
+  filter(Drug_Class !='') %>%
+  group_by(Country, Drug_Class) %>%
+  summarise(DrugClassCount = sum(RPKM)) %>%
+  arrange(desc(DrugClassCount)) 
+write.csv(drug_class_usa, "DrugClass_usa.csv")
+drug_class_tan <- allele_map_sub %>%
+  filter(Country == "Tanzania") %>%
+  separate_rows(Drug_Class, sep = "\\; ") %>%
+  filter(Drug_Class !='') %>%
+  group_by(Country, Drug_Class) %>%
+  summarise(DrugClassCount = sum(RPKM)) %>%
+  arrange(desc(DrugClassCount)) 
+write.csv(drug_class_tan, "DrugClass_Tanzania.csv")
+drug_class_zim <- allele_map_sub %>%
+  filter(Country == "Zimbabwe") %>%
+  separate_rows(Drug_Class, sep = "\\; ") %>%
+  filter(Drug_Class !='') %>%
+  group_by(Country, Drug_Class) %>%
+  summarise(DrugClassCount = sum(RPKM)) %>%
+  arrange(desc(DrugClassCount)) 
+write.csv(drug_class_zim, "DrugClass_Zimbabwe.csv")
+drug_class_sal <- allele_map_sub %>%
+  filter(Country == "El Salvador") %>%
+  separate_rows(Drug_Class, sep = "\\; ") %>%
+  filter(Drug_Class !='') %>%
+  group_by(Country, Drug_Class) %>%
+  summarise(DrugClassCount = sum(RPKM)) %>%
+  arrange(desc(DrugClassCount)) 
+write.csv(drug_class_sal, "DrugClass_Salvador.csv")
+drug_class_ptradi <- allele_map_sub %>%
+  filter(Country == "Peru_tradi") %>%
+  separate_rows(Drug_Class, sep = "\\; ") %>%
+  filter(Drug_Class !='') %>%
+  group_by(Country, Drug_Class) %>%
+  summarise(DrugClassCount = sum(RPKM)) %>%
+  arrange(desc(DrugClassCount)) 
+write.csv(drug_class_ptradi, "DrugClass_Perutradi.csv")
+drug_class_ptran <- allele_map_sub %>%
+  filter(Country == "Peru_transi") %>%
+  separate_rows(Drug_Class, sep = "\\; ") %>%
+  filter(Drug_Class !='') %>%
+  group_by(Country, Drug_Class) %>%
+  summarise(DrugClassCount = sum(RPKM)) %>%
+  arrange(desc(DrugClassCount)) 
+write.csv(drug_class_ptran, "DrugClass_Perutransi.csv")
+```
+Resistance mechanism
+```{r}
+res_mech_eth <- allele_map_eth %>%
+  separate_rows(Resistance_Mechanism, sep = "\\; ") %>%
+  filter(Resistance_Mechanism !='') %>%
+  group_by(Country, Resistance_Mechanism) %>%
+  summarise(ResMechCount = sum(RPKM)) %>%
+  arrange(desc(ResMechCount))
+write.csv(res_mech_eth, "ResMech_ethiopia.csv")
+res_mech_usa <- allele_map_sub %>%
+  filter(Country == "USA") %>%
+  separate_rows(Resistance_Mechanism, sep = "\\; ") %>%
+  filter(Resistance_Mechanism !='') %>%
+  group_by(Country, Resistance_Mechanism) %>%
+  summarise(ResMechCount = sum(RPKM)) %>%
+  arrange(desc(ResMechCount))
+write.csv(res_mech_usa, "ResMech_usa.csv")
+res_mech_tan <- allele_map_sub %>%
+  filter(Country == "Tanzania") %>%
+  separate_rows(Resistance_Mechanism, sep = "\\; ") %>%
+  filter(Resistance_Mechanism !='') %>%
+  group_by(Country, Resistance_Mechanism) %>%
+  summarise(ResMechCount = sum(RPKM)) %>%
+  arrange(desc(ResMechCount))
+write.csv(res_mech_tan, "ResMech_tanzania.csv")
+res_mech_ptran <- allele_map_sub %>%
+  filter(Country == "Peru_transi") %>%
+  separate_rows(Resistance_Mechanism, sep = "\\; ") %>%
+  filter(Resistance_Mechanism !='') %>%
+  group_by(Country, Resistance_Mechanism) %>%
+  summarise(ResMechCount = sum(RPKM)) %>%
+  arrange(desc(ResMechCount))
+write.csv(res_mech_ptran, "ResMech_perutransi.csv")
+res_mech_sal <- allele_map_sub %>%
+  filter(Country == "El Salvador") %>%
+  separate_rows(Resistance_Mechanism, sep = "\\; ") %>%
+  filter(Resistance_Mechanism !='') %>%
+  group_by(Country, Resistance_Mechanism) %>%
+  summarise(ResMechCount = sum(RPKM)) %>%
+  arrange(desc(ResMechCount)) 
+write.csv(res_mech_sal, "ResMech_salvador.csv")
+res_mech_ptrad <- allele_map_sub %>%
+  filter(Country == "Peru_tradi") %>%
+  separate_rows(Resistance_Mechanism, sep = "\\; ") %>%
+  filter(Resistance_Mechanism !='') %>%
+  group_by(Country, Resistance_Mechanism) %>%
+  summarise(ResMechCount = sum(RPKM)) %>%
+  arrange(desc(ResMechCount))
+write.csv(res_mech_ptrad, "ResMech_perutradi.csv")
+res_mech_zim <- allele_map_sub %>%
+  filter(Country == "Zimbabwe") %>%
+  separate_rows(Resistance_Mechanism, sep = "\\; ") %>%
+  filter(Resistance_Mechanism !='') %>%
+  group_by(Country, Resistance_Mechanism) %>%
+  summarise(ResMechCount = sum(RPKM)) %>%
+  arrange(desc(ResMechCount)) 
+write.csv(res_mech_zim, "ResMech_zimbabwe.csv")
+```
+GLM
+```{r}
+# adding column with 1 for presence of gene (values_from in pivot_wider)
+allele_map_sub <- allele_map_sub %>%
+  mutate(Presence = 1)
+aro_glm <- pivot_wider(allele_map_sub ,id_cols = c(1,2,4,5,6,8,9) ,names_from = ARO_Term, values_from = Presence, values_fill = 0)
+aro_glm$Country <- factor(aro_glm$Country)
+aro_glm$Country <- relevel(aro_glm$Country, ref = "Ethiopia")
+list_aro <- as.list(unique(allele_map_sub$ARO_Term))
+out_aro_pval <- rep(NA, length(list_aro))
+usa_out_aro <- rep(NA, length(list_aro))
+tan_out_aro <- rep(NA, length(list_aro))
+zim_out_aro <- rep(NA, length(list_aro))
+elsal_out_aro <- rep(NA, length(list_aro))
+ptrad_out_aro <- rep(NA, length(list_aro))
+ptrans_out_aro <- rep(NA, length(list_aro))
+for (i in 1:length(list_aro)) {
+  aro_test <- colnames(aro_glm)[7+i]
+  #print(aro_test)
+  model1 <- summary(glm(get(aro_test) ~ Country + Total_reads, family = binomial(), data = aro_glm))
+  out_aro_pval[i] <- coefficients(model1)[32]*length(list_aro)
+  usa_out_aro[i] <- coefficients(model1)[30]*length(list_aro)
+  tan_out_aro[i] <- coefficients(model1)[29]*length(list_aro)
+  zim_out_aro[i] <- coefficients(model1)[31]*length(list_aro)
+  elsal_out_aro[i] <- coefficients(model1)[26]*length(list_aro)
+  ptrad_out_aro[i] <- coefficients(model1)[27]*length(list_aro)
+  ptrans_out_aro[i] <- coefficients(model1)[28]*length(list_aro)
+  i =i+1
+}
+outcome_aro <- data.frame(out_aro_pval, usa_out_aro, tan_out_aro, zim_out_aro, elsal_out_aro, ptrad_out_aro, ptrans_out_aro)
+rownames(outcome_aro) <- list_aro
+```
+GLM drug class
+```{r}
+drug_class_df <- allele_map_sub %>%
+  separate_rows(Drug_Class, sep = "\\; ") %>%
+  filter(Drug_Class !='') %>%
+  group_by(SampleID, Total_reads, Country, Lifestyle, Subsistence, Age, Sex, Drug_Class) %>%
+  summarise(Presence = 1)
+drugclass_glm <- pivot_wider(drug_class_df ,id_cols = c(1:7), names_from = Drug_Class, values_from = Presence, values_fill = 0)
+drugclass_glm$Country <- factor(drugclass_glm$Country)
+drugclass_glm$Country <- relevel(drugclass_glm$Country, ref = "Ethiopia")
+list_dc <- as.list(unique(drug_class_df$Drug_Class))
+out_pval <- rep(NA, length(list_dc))
+usa_out <- rep(NA, length(list_dc))
+tan_out <- rep(NA, length(list_dc))
+zim_out <- rep(NA, length(list_dc))
+elsal_out <- rep(NA, length(list_dc))
+ptrad_out <- rep(NA, length(list_dc))
+ptrans_out <- rep(NA, length(list_dc))
+for (i in 1:length(list_dc)) {
+  dc_test <- colnames(drugclass_glm)[7+i]
+  print(dc_test)
+  model1 <- summary(glm(get(dc_test) ~ Country + Total_reads, family = binomial(), data = drugclass_glm))
+  out_pval[i] <- coefficients(model1)[32] * length(list_dc)
+  usa_out[i] <- coefficients(model1)[30]* length(list_dc)
+  tan_out[i] <- coefficients(model1)[29]* length(list_dc)
+  zim_out[i] <- coefficients(model1)[31]* length(list_dc)
+  elsal_out[i] <- coefficients(model1)[26]* length(list_dc)
+  ptrad_out[i] <- coefficients(model1)[27]* length(list_dc)
+  ptrans_out[i] <- coefficients(model1)[28]* length(list_dc)
+  i =i+1
+}
+outcome_dc <- data.frame(out_pval, usa_out, tan_out, zim_out, elsal_out, ptrad_out, ptrans_out)
+rownames(outcome_dc) <- list_dc
+```
+
+```{r}
+allele_map_sub <- allele_map_sub %>%
+  mutate(EthvsOthers = "")
+allele_map_sub$EthvsOthers[which(allele_map_sub$Country=="Ethiopia")] <- "Eth"
+allele_map_sub$EthvsOthers[which(allele_map_sub$Country!="Ethiopia")] <- "Others"
+drug_class_df <- allele_map_sub %>%
+  separate_rows(Drug_Class, sep = "\\; ") %>%
+  filter(Drug_Class !='') %>%
+  group_by(SampleID, Total_reads, EthvsOthers, Age, Sex, Drug_Class) %>%
+  summarise(Presence = 1)
+drugclass_glm <- pivot_wider(drug_class_df ,id_cols = c(1:5), names_from = Drug_Class, values_from = Presence, values_fill = 0)
+drugclass_glm$EthvsOthers <- factor(drugclass_glm$EthvsOthers)
+drugclass_glm$EthvsOthers <- relevel(drugclass_glm$EthvsOthers, ref = "Eth")
+list_dc <- as.list(unique(drug_class_df$Drug_Class))
+out_pval <- rep(NA, length(list_dc))
+oth_out <- rep(NA, length(list_dc))
+for (i in 1:length(list_dc)) {
+  dc_test <- colnames(drugclass_glm)[5+i]
+  print(dc_test)
+  model1 <- summary(glm(get(dc_test) ~ EthvsOthers + Total_reads, family = binomial(), data = drugclass_glm))
+  out_pval[i] <- coefficients(model1)[12] * length(list_dc)
+  oth_out[i] <- coefficients(model1)[11]* length(list_dc)
+  i =i+1
+}
+outcome_dc <- data.frame(out_pval, oth_out)
+rownames(outcome_dc) <- list_dc
+```
+## Jaccard
+```{r}
+tax_rgi <- as.data.frame(aro_glm)
+rownames(tax_rgi) <- tax_rgi$fastqID
+aro_matrix <- tax_rgi[,8:207]
+dist_jaccard_aro <- vegan::vegdist(aro_matrix, by_rows = TRUE, diag = TRUE, method = "jaccard")
+pca_aro <- pcoa(dist_jaccard_aro)
+pca_aro_df <- as.data.frame(pca_aro$vectors)
+pca_aro_df <- cbind(md_reads, pca_aro_df)
+
+per_explained_aro <- 100*pca_aro$values$Relative_eig / sum(pca_aro$values$Relative_eig)
+per_explained_aro <- round(per_explained_aro[1:2], digits = 1)
+per_explained_aro[1:2]
+# Axis 1: 29.4%  Axis 2: 15.4%
+labs_aro <- c(glue("Axis1 [{per_explained_aro[1]}%]"),
+          glue("Axis2 [{per_explained_aro[2]}%]"))
+labs_aro
+pal_pcoa <- palbrew_all[c(69,66,67,68)]
+
+pdf("ARO_jaccard_pcoa.pdf")
+ggplot(pca_aro_df, aes(x=Axis.1, y=Axis.2, color=Lifestyle, shape=Lifestyle)) +
+  geom_point()+
+  scale_shape_manual(values=c(15,16,17,4)) +
+    scale_color_manual(values = pal_pcoa) +
+    scale_fill_manual(values = pal_pcoa) +
+  stat_ellipse(mapping= aes(fill = Lifestyle, color = Lifestyle),geom = "polygon", alpha = 0.01, show.legend = FALSE) +
+  xlab(labs_aro[1]) +
+  ylab(labs_aro[2]) +
+  labs(colour = "Lifestyle", shape = "Country") +
+  theme_bw()
+dev.off()
+pdf("ARO_corr.pdf")
+ggplot(pca_aro_df, aes(x=Total_reads, y=Axis.1)) +
+  geom_point(aes(col=Lifestyle, shape=Lifestyle)) +
+  geom_smooth(method=lm, se=FALSE) +
+  scale_shape_manual(values=c(15,16,17,4)) +
+  scale_color_manual(values = pal_pcoa) +
+  scale_fill_manual(values = pal_pcoa) +
+  theme_bw()
+dev.off()
+cor(pca_aro_df$Total_reads,pca_aro_df$Axis.1, method = "spearman")
+cor.test(pca_aro_df$Total_reads,pca_aro_df$Axis.1, method = "spearman")
+```
+
+```{r}
+dc_matrix <- as.data.frame(drugclass_glm[,c(1,8:36)])
+rownames(dc_matrix) <- dc_matrix$SampleID
+dc_matrix <- dc_matrix[,-1]
+dist_jaccard_dc <- vegan::vegdist(dc_matrix, by_rows = FALSE, diag = TRUE, method = "jaccard")
+pca_dc <- pcoa(dist_jaccard_dc)
+pca_dc_df <- as.data.frame(pca_dc$vectors)
+pca_dc_df <- pca_dc_df %>%
+  mutate(SampleID = rownames(pca_dc_df))
+pca_dc_df <- merge(md_reads, pca_dc_df, by="SampleID")
+
+per_explained_dc <- 100*pca_dc$values$Relative_eig / sum(pca_dc$values$Relative_eig)
+per_explained_dc <- round(per_explained_dc[1:2], digits = 1)
+per_explained_dc[1:2]
+# Axis 1: 36.5%  Axis 2: 28.8%
+labs_dc <- c(glue("Axis1 [{per_explained_dc[1]}%]"),
+          glue("Axis2 [{per_explained_dc[2]}%]"))
+labs_dc
+pal_pcoa <- palbrew_all[c(69,66,67,68)]
+
+pdf("DrugClass_jaccard_pcoa.pdf")
+ggplot(pca_dc_df, aes(x=Axis.1, y=Axis.2, color=Lifestyle, shape=Lifestyle)) +
+  geom_point()+
+  scale_shape_manual(values=c(15,16,17,4)) +
+    scale_color_manual(values = pal_pcoa) +
+    scale_fill_manual(values = pal_pcoa) +
+  stat_ellipse(mapping= aes(fill = Lifestyle, color = Lifestyle),geom = "polygon", alpha = 0.01, show.legend = FALSE) +
+  xlab(labs_aro[1]) +
+  ylab(labs_aro[2]) +
+  labs(colour = "Lifestyle", shape = "Country") +
+  theme_bw()
+dev.off()
+pdf("DrugClass_corr.pdf")
+ggplot(pca_dc_df, aes(x=Total_reads, y=Axis.1)) +
+  geom_point(aes(col=Lifestyle, shape=Lifestyle)) +
+  geom_smooth(method=lm, se=FALSE) +
+  scale_shape_manual(values=c(15,16,17,4)) +
+  scale_color_manual(values = pal_pcoa) +
+  scale_fill_manual(values = pal_pcoa) +
+  theme_bw()
+dev.off()
+cor(pca_dc_df$Total_reads,pca_dc_df$Axis.1, method = "spearman")
+cor.test(pca_dc_df$Total_reads,pca_dc_df$Axis.1, method = "spearman")
+```

@@ -1,0 +1,396 @@
+RMarkDown to compare the taxonomic abundance between the two 16S rRNA gene amplicon sequencing datasets (primer set 1 and primer set 2)
+
+#Loading library
+```{r}
+library(Biostrings)
+library(devtools)
+library(phyloseq)
+library(tidyr)
+library(plyr)
+library(readxl)
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(vegan)
+library(microbiome)
+library(ape)
+library(ggpubr)
+library(ggsignif)
+library(ggprism)
+library(picante)
+library(magrittr)
+library(RColorBrewer)
+library(ggcorrplot)
+```
+# Primer set 1
+```{r}
+#Taxonomy table
+tax_ps1 <- read_excel("Tables/Additional\ file\ 3.xlsx", sheet = "Primer_set2_Tax_table")
+tax_ps1 <- tax_ps1 %>%
+  mutate(ASV = paste("ASV", seq(1:nrow(tax_ps1)), sep="")) %>%
+  mutate(SEQ = rownames(tax_ps1))
+row.names(tax_ps1) <- tax_ps1$ASV
+which(duplicated(row.names(tax_ps1))==TRUE) 
+correspondance_ps1<-tax_ps1[,c(8:9)]
+tax_ps1 <- tax_ps1[, -c(8:9)]
+tax_ps1[which(is.na(tax_ps1[,6])),6] <- "Unassigned"
+tax_ps1[which(is.na(tax_ps1[,7])),7] <- "Unassigned"
+tax_ps1$Species <- str_c(tax_ps1$Genus, '_', tax_ps1$Species)
+tax_ps1=as.matrix(tax_ps1)
+rownames(tax_ps1) <- str_replace(rownames(tax_ps1), "ASV", "MI_ASV")
+taxonomy_ps1 <- tax_table(tax_ps1)
+
+#OTU table
+otu_ps1 <- read_excel("Tables/Additional\ file\ 3.xlsx", sheet = "Primer_set1_ASV_table")
+otu_ps1 <- t(otu_ps1)
+otu_df_ps1 <- as.data.frame(otu_ps1)
+row.names(correspondance_ps1) <- correspondance_ps1$SEQ
+otu_ps1 <- cbind(correspondance_ps1, otu_ps1)
+row.names(otu_ps1)<-otu_ps1$ASV
+otu_ps1 <- otu_ps1[,-(1:2) ]
+otu_ps1<-as.matrix(otu_ps1)
+class(otu_ps1) <- "numeric"
+rownames(otu_ps1) <- str_replace(rownames(otu_ps1), "ASV", "MI_ASV")
+taxa_ps1 = otu_table(otu_ps1, taxa_are_rows = TRUE)
+
+#Metadata
+md_ps1 <- read_excel("Tables/Additional\ file\ 2.xlsx", sheet = "Primer_set1_metadata")
+md_ps1 <- as.data.frame(md_ps1)
+rownames(md_ps1) <- md_ps1$fastqID
+md_ps1 <- md_ps1 %>%
+  mutate(Tool = "Microbiome_Insight")
+metadata_ps1 <- sample_data(md_ps1)
+
+#Phyloseq
+ps_ps1 <- phyloseq(taxonomy_ps1, taxa_ps1)
+ps_ps1 <- merge_phyloseq(ps_ps1, metadata_ps1)
+ps_ps1 <- subset_samples(ps_ps1, Country=="Ethiopia")
+```
+# Primer set 2
+```{r}
+#Taxonomy table
+tax_ps2 <- read_excel("Tables/Additional\ file\ 3.xlsx", sheet = "Primer_set2_Tax_table")
+tax_ps2 <- tax_ps2 %>%
+  mutate(ASV = paste("ASV", seq(1:nrow(tax_ps2)), sep="")) %>%
+  mutate(SEQ = rownames(tax_ps2))
+row.names(tax_ps2) <- tax_ps2$ASV
+correspondence_ps2 <-tax_ps2[,c(8:9)]
+tax_ps2 <- tax_ps2[,-(8:9)]
+tax_ps2[which(is.na(tax_ps2[,6])),6] <- "Unassigned"
+tax_ps2[which(is.na(tax_ps2[,7])),7] <- "Unassigned"
+tax_ps2$Species <- str_c(tax_ps2$Genus, '_', tax_ps2$Species)
+tax_ps2=as.matrix(tax_ps2)
+rownames(tax_ps2) <- str_replace(rownames(tax_ps2), "ASV", "ps2_ASV")
+taxonomy_ps2 <- tax_table(tax_ps2)
+
+#OTU table
+otu_1 <- read_excel("Tables/Additional\ file\ 4.xlsx")
+otu_2 <- read_excel("Tables/Additional\ file\ 5.xlsx")
+otu_ps2 <- rbind(otu_1, otu_2)
+otu_ps2 <- t(otu_ps2)
+row.names(correspondence_ps2) <- correspondence_ps2$SEQ
+otu_ps2 <- cbind(correspondence_ps2, otu_ps2)
+row.names(otu_ps2)<-otu_ps2$ASV
+otu_ps2 <- otu_ps2[,-(1:2) ]
+otu_ps2<-as.matrix(otu_ps2)
+class(otu_ps2) <- "numeric"
+rownames(otu_ps2) <- str_replace(rownames(otu_ps2), "ASV", "ps2_ASV")
+taxa_ps2=otu_table(otu_ps2, taxa_are_rows = TRUE)
+
+#Metadata
+md_ps2 <- read_excel("Tables/Additional\ file\ 2.xlsx", sheet = "Primer_set2_metadata")
+md_ps2 <- as.data.frame(md_ps2)
+md_ps2 <- md_ps2 %>%
+  mutate(Tool = "Primer_set_2")
+rownames(md_ps2) <- md_ps2$fastqID
+metadata_ps2 <- sample_data(md_ps2)
+
+#Phyloseq
+ps_ps2 <- phyloseq(taxonomy_ps2, taxa_ps2)
+ps_ps2 <- merge_phyloseq(ps_ps2, metadata_ps2)
+ps_ps2 <- subset_samples(ps_ps2, Country=="Ethiopia")
+```
+
+# Comparison primers 16S
+```{r}
+## Primer set 2
+ps_ps2_16S <- ps_ps2
+ps_ps2_16S <- prune_samples(sample_sums(ps_ps2_16S) > 5000, ps_ps2_16S)
+ps_ps2_16S <- prune_taxa(taxa_sums(ps_ps2_16S) > 0, ps_ps2_16S)
+# Primer set 1
+ps_ps1_16S <- ps_ps1
+ps_ps1_16S <- subset_samples(ps_ps1_16S, SampleID %in% as.matrix(sample_data(psDU_primers)[,1]))
+ps_ps1_16S <- prune_taxa(taxa_sums(ps_ps1_16S) > 0, ps_ps1_16S)
+# Merge together
+ps_16S <- merge_phyloseq(ps_ps2_16S, ps_ps1_16S)
+# Filtering 
+ps_16S <- ps_16S %>%
+  subset_taxa(Family != "Mitochondria") %>%
+  subset_taxa(Order != "Chloroplast") %>%
+  subset_taxa(Kingdom !="Unassigned") %>%
+  subset_taxa(Kingdom != "Eukaryota")
+#Relative abundance
+ps_16S_ra <- transform_sample_counts(ps_16S, function(x) x/sum(x))
+```
+Phylum
+```{r}
+ps_16S_phy <- tax_glom(ps_16S_ra, "Phylum")
+phy_melt <- psmelt(ps_16S_phy)
+# Taxa abundance comparison
+wil_test_phy <- phy_melt %>%
+  group_by(Phylum) %>%
+  mutate(pval = wilcox.test(Abundance ~ Tool, paired = F)$p.value)
+wil_test_phy['p.value_bonf'] <- wil_test_phy$pval * length(unique(wil_test_phy$Phylum))
+unique(wil_test_phy[which(wil_test_phy$p.value_bonf < 0.05), "Phylum"])
+table_phy <- wil_test_phy %>%
+  group_by(Phylum, pval, p.value_bonf) %>%
+  summarise(Comparison = "Phylum between each primer set")
+write.csv(table_phy, "Primers_comp_phylum.csv")
+# Sample comparison
+wil_test_phy_sam <- phy_melt %>%
+  group_by(SampleID) %>%
+  mutate(pval = wilcox.test(Abundance ~ Tool, paired = F)$p.value)
+wil_test_phy_sam['p.value_bonf'] <- wil_test_phy_sam$pval * length(unique(wil_test_phy_sam$Sample))
+table_phy_sam <- wil_test_phy_sam %>%
+  group_by(SampleID, pval, p.value_bonf) %>%
+  summarise(Comparison = "Phylum between each primer set, matched samples")
+write.csv(table_phy_sam, "Primers_comp_phylum_samples.csv")
+
+#Tab family relative abundance and prevalence
+#Primer set 2
+physeq_phy_ps2 <- subset_samples(ps_16S_phy, Tool == "Primer_set_2")
+ethiopiaP_relabTAb_ps2 <- as.data.frame(tax_table(physeq_phy_ps2))
+ethiopiaP_relabTAb_ps2 <- ethiopiaP_relabTAb_ps2 %>%
+  mutate(Rel_abun = round(100*apply(otu_table(physeq_phy_ps2), 1, mean), digits = 3),
+         Min = round(100*apply(otu_table(physeq_phy_ps2), 1, min), digits = 3),
+         Max = round(100*apply(otu_table(physeq_phy_ps2), 1, max), digits = 3),
+         Standard_dev = round(100*apply(otu_table(physeq_phy_ps2), 1, sd), digits = 3))
+row.names(ethiopiaP_relabTAb_ps2)<- ethiopiaP_relabTAb_ps2[,"Phylum"]
+ethiopiaP_relabTAb_ps2 <- ethiopiaP_relabTAb_ps2[, -c(3:7)]
+ethiopiaP_relabTAb_ps2 <- ethiopiaP_relabTAb_ps2 %>% mutate(Tool = "ps2")
+#Primer set 1
+physeq_phy_ps1 <- subset_samples(ps2_phy, Tool == "Primer_set_1")
+ethiopiaP_relabTAb_ps1 <- as.data.frame(tax_table(physeq_phy_ps1))
+ethiopiaP_relabTAb_ps1 <- ethiopiaP_relabTAb_ps1 %>%
+  mutate(Rel_abun = round(100*apply(otu_table(physeq_phy_ps1), 1, mean), digits = 3),
+         Min = round(100*apply(otu_table(physeq_phy_ps1), 1, mi1n), digits = 3),
+         Max = round(100*apply(otu_table(physeq_phy_ps1), 1, max), digits = 3),
+         Standard_dev = round(100*apply(otu_table(physeq_phy_ps1), 1, sd), digits = 3))
+row.names(ethiopiaP_relabTAb_ps1)<- ethiopiaP_relabTAb_ps1[,"Phylum"]
+ethiopiaP_relabTAb_ps1 <- ethiopiaP_relabTAb_ps1[, -c(3:7)] 
+ethiopiaP_relabTAb_ps1 <- ethiopiaP_relabTAb_ps1 %>% mutate(Tool = "ps1")
+
+ethiopiaP_relabTAb <- rbind(ethiopiaP_relabTAb_ps2, ethiopiaP_relabTAb_ps1)
+write.csv(ethiopiaP_relabTAb, "RelAbun_phylum_primersComp.csv")
+
+# Prevalence
+prevdf_phy_ps2= apply(X= otu_table(physeq_phy_ps2),
+               MARGIN = ifelse(taxa_are_rows(physeq_phy_ps2),
+              yes =1, no =2), FUN = function(x){sum(x>0)})
+prevdf_phy_ps2 = data.frame(Prevalence = prevdf_phy_ps2,
+                        TotalAbundance = taxa_sums(physeq_phy_ps2),
+                        tax_table(physeq_phy_ps2))
+prevdf_phy_ps2 <- prevdf_phy_ps2 %>% mutate(Tool = "ps2")
+prevdf_phy_ps1= apply(X= otu_table(physeq_phy_ps1),
+               MARGIN = ifelse(taxa_are_rows(physeq_phy_ps1),
+              yes =1, no =2), FUN = function(x){sum(x>0)})
+prevdf_phy_ps1 = data.frame(Prevalence = prevdf_phy_ps1,
+                        TotalAbundance = taxa_sums(physeq_phy_ps1),
+                        tax_table(physeq_phy_ps1))
+prevdf_phy_ps1 <- prevdf_phy_ps1 %>% mutate(Tool = "ps1")
+
+prevdf_phy <- rbind(prevdf_phy_ps1, prevdf_phy_ps2)
+write.csv(prevdf_phy, "Prev_phylum_primersComp.csv")
+# Phylum prevalence test
+phy_melt <- phy_melt %>%
+  mutate(Prev = ifelse(Abundance>0,
+              yes =1, no =0))
+wil_test_prevP <- phy_melt %>%
+  group_by(Phylum) %>%
+  mutate(pval = wilcox.test(Prev ~ Tool, paired = F)$p.value)
+wil_test_prevP['p.value_bonf'] <- wil_test_prevP$pval * length(unique(wil_test_prevP$Phylum))
+unique(wil_test_prevP[which(wil_test_prevP$p.value_bonf < 0.05), "Phylum"])
+table_phy_prev <- wil_test_prevP %>%
+  group_by(Phylum, pval, p.value_bonf) %>%
+  summarise(Comparison = "Phylum prevalence between each primer set")
+write.csv(table_phy_prev, "PrimersPrev_comp_phylum.csv")
+```
+Family
+```{r}
+physeq_fam <- tax_glom(ps_16S_ra, "Family")
+fam_melt <- psmelt(physeq_fam)
+# Taxa abundance comparison
+wil_test_fam <- fam_melt %>%
+  group_by(Family) %>%
+  mutate(pval = wilcox.test(Abundance ~ Tool, paired = F)$p.value)
+wil_test_fam['p.value_bonf'] <- wil_test_fam$pval * length(unique(wil_test_fam$Family))
+unique(wil_test_fam[which(wil_test_fam$p.value_bonf < 0.05), "Family"])
+table_fam <- wil_test_fam %>%
+  group_by(Family, pval, p.value_bonf) %>%
+  summarise(Comparison = "Family between each primer set")
+write.csv(table_fam, "Primers_comp_family.csv")
+#Sample comparison
+wil_test_fam_sam <- fam_melt %>%
+  group_by(SampleID) %>%
+  mutate(pval = wilcox.test(Abundance ~ Tool, paired = F)$p.value)
+wil_test_fam_sam['p.value_bonf'] <- wil_test_fam_sam$pval * length(unique(wil_test_fam_sam$Sample))
+table_fam_sam <- wil_test_fam_sam %>%
+  group_by(SampleID, pval, p.value_bonf) %>%
+  summarise(Comparison = "Family between each primer set, matched samples")
+write.csv(table_fam_sam, "Primers_comp_family_samples.csv")
+
+#Tab family relative abundance and prevalence
+physeq_fam_ps2 <- subset_samples(physeq_fam, Tool == "Primer_set_2")
+ethiopiaF_relabTAb_ps2 <- as.data.frame(tax_table(physeq_fam_ps2))
+ethiopiaF_relabTAb_ps2 <- ethiopiaF_relabTAb_ps2 %>%
+  mutate(Rel_abun = round(100*apply(otu_table(physeq_fam_ps2), 1, mean), digits = 3),
+         Min = round(100*apply(otu_table(physeq_fam_ps2), 1, min), digits = 3),
+         Max = round(100*apply(otu_table(physeq_fam_ps2), 1, max), digits = 3),
+         Standard_dev = round(100*apply(otu_table(physeq_fam_ps2), 1, sd), digits = 3))
+row.names(ethiopiaF_relabTAb_ps2)<- ethiopiaF_relabTAb_ps2[,"Family"]
+ethiopiaF_relabTAb_ps2 <- ethiopiaF_relabTAb_ps2[, -c(6,7)]
+ethiopiaF_relabTAb_ps2 <- ethiopiaF_relabTAb_ps2 %>% mutate(Tool = "ps2")
+physeq_fam_ps1 <- subset_samples(physeq_fam, Tool == "Primer_set_1")
+ethiopiaF_relabTAb_ps1 <- as.data.frame(tax_table(physeq_fam_ps1))
+ethiopiaF_relabTAb_ps1 <- ethiopiaF_relabTAb_ps1 %>%
+  mutate(Rel_abun = round(100*apply(otu_table(physeq_fam_ps1), 1, mean), digits = 3),
+         Mi1n = round(100*apply(otu_table(physeq_fam_ps1), 1, min), digits = 3),
+         Max = round(100*apply(otu_table(physeq_fam_ps1), 1, max), digits = 3),
+         Standard_dev = round(100*apply(otu_table(physeq_fam_ps1), 1, sd), digits = 3))
+row.names(ethiopiaF_relabTAb_ps1)<- ethiopiaF_relabTAb_ps1[,"Fa_ps1ly"]
+ethiopiaF_relabTAb_ps1 <- ethiopiaF_relabTAb_ps1[, -c(6,7)] 
+ethiopiaF_relabTAb_ps1 <- ethiopiaF_relabTAb_ps1 %>% mutate(Tool = "ps1")
+ethiopiaF_relabTAb <- rbind(ethiopiaF_relabTAb_ps2, ethiopiaF_relabTAb_ps1)
+write.csv(ethiopiaF_relabTAb, "RelAbun_family_primersComp.csv")
+
+# Prevalence
+prevdf_fam_ps2= apply(X= otu_table(physeq_fam_ps2),
+               MARGIN = ifelse(taxa_are_rows(physeq_fam_ps2),
+              yes =1, no =2), FUN = function(x){sum(x>0)})
+prevdf_fam_ps2 = data.frame(Prevalence = prevdf_fam_ps2,
+                        TotalAbundance = taxa_sums(physeq_fam_ps2),
+                        tax_table(physeq_fam_ps2))
+prevdf_fam_ps2 <- prevdf_fam_ps2 %>% mutate(Tool = "ps2")
+prevdf_fam_ps1= apply(X= otu_table(physeq_fam_ps1),
+               MARGIN = ifelse(taxa_are_rows(physeq_fam_ps1),
+              yes =1, no =2), FUN = function(x){sum(x>0)})
+prevdf_fam_ps1 = data.frame(Prevalence = prevdf_fam_ps1,
+                        TotalAbundance = taxa_sums(physeq_fam_ps1),
+                        tax_table(physeq_fam_ps1))
+prevdf_fam_ps1 <- prevdf_fam_ps1 %>% mutate(Tool = "ps1")
+prevdf_fam <- rbind(prevdf_fam_ps1, prevdf_fam_ps2)
+write.csv(prevdf_fam, "Prev_family_primersComp.csv")
+# Family prevalence test
+fam_melt <- fam_melt %>%
+  mutate(Prev = ifelse(Abundance>0,
+              yes =1, no =0))
+wil_test_prev <- fam_melt %>%
+  group_by(Family) %>%
+  mutate(pval = wilcox.test(Prev ~ Tool, paired = F)$p.value)
+wil_test_prev['p.value_bonf'] <- wil_test_prev$pval * length(unique(wil_test_prev$Family))
+unique(wil_test_prev[which(wil_test_prev$p.value_bonf < 0.05), "Family"])
+table_fam_prev <- wil_test_prev %>%
+  group_by(Family, pval, p.value_bonf) %>%
+  summarise(Comparison = "Family prevalence between each primer set")
+write.csv(table_fam_prev, "PrimersPrev_comp_family.csv")
+```
+Genus
+```{r}
+physeq_gen <- tax_glom(ps_16S_ra, "Genus", NArm = FALSE)
+gen_melt <- psmelt(physeq_gen)
+# Taxa abundance comparison
+wil_test_gen <- gen_melt %>%
+  group_by(Genus) %>%
+  mutate(pval = wilcox.test(Abundance ~ Tool, paired = F)$p.value)
+wil_test_gen['p.value_bonf'] <- wil_test_gen$pval * length(unique(wil_test_gen$Genus))
+table_gen <- wil_test_gen %>%
+  group_by(Genus, pval, p.value_bonf) %>%
+  summarise(Comparison = "Genus between each primer set")
+write.csv(table_gen, "Primers_comp_genus.csv")
+
+# Sample comparison
+wil_test_gen_sam <- gen_melt %>%
+  group_by(SampleID) %>%
+  mutate(pval = wilcox.test(Abundance ~ Tool, paired = F)$p.value)
+wil_test_gen_sam['p.value_bonf'] <- wil_test_gen_sam$pval * length(unique(wil_test_gen_sam$Sample))
+table_gen_sam <- wil_test_gen_sam %>%
+  group_by(SampleID, pval, p.value_bonf) %>%
+  summarise(Comparison = "Genus between each primer set, matched samples")
+write.csv(table_gen_sam, "Primers_comp_genus_samples.csv")
+
+# Table relative abundance and prevalence
+genseq_gen_ps2 <- subset_samples(physeq_gen, Tool == "Primer_set_2")
+ethiopiaG_relabTAb_ps2 <- as.data.frame(tax_table(genseq_gen_ps2))
+ethiopiaG_relabTAb_ps2 <- ethiopiaG_relabTAb_ps2 %>%
+  mutate(Rel_abun = round(100*apply(otu_table(genseq_gen_ps2), 1, mean), digits = 3),
+         Min = round(100*apply(otu_table(genseq_gen_ps2), 1, min), digits = 3),
+         Max = round(100*apply(otu_table(genseq_gen_ps2), 1, max), digits = 3),
+         Standard_dev = round(100*apply(otu_table(genseq_gen_ps2), 1, sd), digits = 3))
+ethiopiaG_relabTAb_ps2 <- ethiopiaG_relabTAb_ps2 %>% mutate(Tool = "ps2")
+
+genseq_gen_ps1 <- subset_samples(physeq_gen, Tool == "Primer_set_1")
+ethiopiaG_relabTAb_ps1 <- as.data.frame(tax_table(genseq_gen_ps1))
+ethiopiaG_relabTAb_ps1 <- ethiopiaG_relabTAb_ps1 %>%
+  mutate(Rel_abun = round(100*apply(otu_table(genseq_gen_ps1), 1, mean), digits = 3),
+         Min = round(100*apply(otu_table(genseq_gen_ps1), 1, min), digits = 3),
+         Max = round(100*apply(otu_table(genseq_gen_ps1), 1, max), digits = 3),
+         Standard_dev = round(100*apply(otu_table(genseq_gen_ps1), 1, sd), digits = 3))
+ethiopiaG_relabTAb_ps1 <- ethiopiaG_relabTAb_ps1 %>% mutate(Tool = "ps1")
+
+ethiopiaG_relabTAb <- rbind(ethiopiaG_relabTAb_ps2, ethiopiaG_relabTAb_ps1)
+write.csv(ethiopiaG_relabTAb, "RelAbun_genus_primersComp.csv")
+
+# Prevalence
+prevdf_gen_ps2= apply(X= otu_table(genseq_gen_ps2),
+               MARGIN = ifelse(taxa_are_rows(genseq_gen_ps2),
+              yes =1, no =2), FUN = function(x){sum(x>0)})
+prevdf_gen_ps2 = data.frame(Prevalence = prevdf_gen_ps2,
+                        TotalAbundance = taxa_sums(genseq_gen_ps2),
+                        tax_table(genseq_gen_ps2))
+prevdf_gen_ps2 <- prevdf_gen_ps2 %>% mutate(Tool = "ps2")
+prevdf_gen_ps1= apply(X= otu_table(genseq_gen_ps1),
+               MARGIN = ifelse(taxa_are_rows(genseq_gen_ps1),
+              yes =1, no =2), FUN = function(x){sum(x>0)})
+prevdf_gen_ps1 = data.frame(Prevalence = prevdf_gen_ps1,
+                        TotalAbundance = taxa_sums(genseq_gen_ps1),
+                        tax_table(genseq_gen_ps1))
+prevdf_gen_ps1 <- prevdf_gen_ps1 %>% mutate(Tool = "ps1")
+prevdf_gen <- rbind(prevdf_gen_ps1, prevdf_gen_ps2)
+write.csv(prevdf_gen, "Prev_genus_primersComp.csv")
+#Prevalence comparison
+gen_melt <- gen_melt %>%
+  mutate(Prev = ifelse(Abundance>0,
+              yes =1, no =0))
+wil_test_prevG <- gen_melt %>%
+  group_by(Genus) %>%
+  mutate(pval = wilcox.test(Prev ~ Tool, paired = F)$p.value)
+wil_test_prevG['p.value_bonf'] <- wil_test_prevG$pval * length(unique(wil_test_prevG$Genus))
+unique(wil_test_prevG[which(wil_test_prevG$p.value_bonf < 0.05), "Genus"])
+table_gen_prev <- wil_test_prevG %>%
+  group_by(Genus, pval, p.value_bonf) %>%
+  summarise(Comparison = "Genus prevalence between each primer set")
+write.csv(table_gen_prev, "PrimersPrev_comp_genus.csv")
+```
+Species
+```{r}
+physeq_sp <- tax_glom(ps_16S_ra, "Species", NArm = FALSE)
+sp_melt <- psmelt(physeq_sp)
+#Taxa abundance comparison
+wil_test_sp <- sp_melt %>%
+  group_by(Genus) %>%
+  mutate(pval = wilcox.test(Abundance ~ Tool, paired = F)$p.value)
+wil_test_sp['p.value_bonf'] <- wil_test_sp$pval * length(unique(wil_test_sp$Genus))
+table_spe <- wil_test_sp %>%
+  group_by(Genus, pval, p.value_bonf) %>%
+  summarise(Comparison = "Species between each preimer set")
+write.csv(table_spe, "Primers_comp_species.csv")
+#Sample comaprison
+wil_test_sp_sam <- sp_melt %>%
+  group_by(SampleID) %>%
+  mutate(pval = wilcox.test(Abundance ~ Tool, paired = F)$p.value)
+wil_test_sp_sam['p.value_bonf'] <- wil_test_sp_sam$pval * length(unique(wil_test_sp_sam$Sample))
+table_spe_sam <- wil_test_sp_sam %>%
+  group_by(SampleID, pval, p.value_bonf) %>%
+  summarise(Comparison = "Species between each primer set, matched samples")
+write.csv(table_spe_sam, "Primers_comp_species_samples.csv")
+```
